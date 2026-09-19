@@ -388,7 +388,10 @@ function openSwapTarget(targetDate, fromDate) {
 function slotRowHtml(g, entry) {
   const members = state.data.people.filter((p) => p.groupId === g.id);
   const opts = ['<option value="">— 选择人员 —</option>']
-    .concat(members.map((p) => `<option value="${p.id}" ${entry && entry.personId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`))
+    .concat(members.map((p) => {
+      const label = p.code && p.code !== p.name ? `${esc(p.name)}（${esc(p.code)}）` : esc(p.name);
+      return `<option value="${p.id}" ${entry && entry.personId === p.id ? 'selected' : ''}>${label}</option>`;
+    }))
     .join('');
   return `
     <div class="slot-row">
@@ -764,7 +767,8 @@ async function loadSettings() {
     <div class="card">
       <h3>👥 成员管理</h3>
       <p class="hint">两个组<b>独立排班、互不干扰</b>。<b>移除成员</b>＝删除账号并清空其名下全部排班（立即下线）；
-        <b>调整分组</b>会清空其原组排班，之后按新组轮换。新成员初始密码默认 <code>${esc(m.defaultPassword)}</code>，登录后可自行修改。</p>
+        <b>调整分组</b>会清空其原组排班。<b>改名</b>只改显示/登录名，排班自动更新；
+        每人还有一个<b>代号</b>（如 a、b），排班规则 md 和 AI 识别用代号，改姓名不用动规则。</p>
       ${m.groups.map((g) => {
         const members = m.people.filter((p) => p.groupId === g.id);
         const other = m.groups.find((x) => x.id !== g.id);
@@ -773,7 +777,8 @@ async function loadSettings() {
           <h4>${esc(g.name)}（${members.length} 人）</h4>
           ${members.length ? members.map((p) => `
             <div class="member-row">
-              <span class="name">${esc(p.name)}</span>
+              <span class="name">${esc(p.name)}${p.code && p.code !== p.name ? `<span class="code-chip" title="代号：规则 md 与 AI 识别用">${esc(p.code)}</span>` : ''}</span>
+              <button class="ghost btn-sm rn" data-id="${p.id}" data-name="${esc(p.name)}" data-code="${esc(p.code || '')}">✏️ 改名</button>
               ${other ? `<button class="ghost btn-sm mv" data-id="${p.id}" data-to="${other.id}" data-name="${esc(p.name)}" data-g="${esc(other.name)}">移到「${esc(other.name)}」</button>` : ''}
               <button class="btn-sm softdanger rm" data-id="${p.id}" data-name="${esc(p.name)}">移除</button>
             </div>`).join('') : '<p class="hint">暂无成员（该组不会自动排班，添加成员后自动补排未来 4 周）</p>'}
@@ -782,10 +787,11 @@ async function loadSettings() {
       <div class="section">
         <h3>添加成员</h3>
         <div class="form-grid">
-          <div><label>姓名</label><input id="mbName" maxlength="20" placeholder="新成员姓名"></div>
+          <div><label>姓名（登录与显示用）</label><input id="mbName" maxlength="20" placeholder="新成员姓名"></div>
           <div><label>加入分组</label>
             <select id="mbGroup">${m.groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select>
           </div>
+          <div><label>代号（规则/AI 用，空 = 自动分配 a/b/c…）</label><input id="mbCode" maxlength="10" placeholder="如 e、f、g"></div>
           <div><label>初始密码（空 = ${esc(m.defaultPassword)}）</label><input id="mbPass" placeholder="${esc(m.defaultPassword)}"></div>
           <div><label>&nbsp;</label><button id="btnMemberAdd" class="primary">➕ 添加成员</button></div>
         </div>
@@ -898,7 +904,7 @@ async function loadSettings() {
 
     <div class="card">
       <h3>📥 批量导入排班</h3>
-      <p class="hint">每行：<code>日期 姓名1 姓名2 …</code>（逗号/空格分隔，一天可多人，自动落到各成员所在组）；
+      <p class="hint">每行：<code>日期 姓名1 姓名2 …</code>（逗号/空格分隔，一天可多人，自动落到各成员所在组；也可以直接写代号 a/b/c）；
         姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
       <textarea id="impText" rows="6" placeholder="2026-09-21 张三,李四&#10;2026-09-22 王五 赵六"></textarea>
       <div class="rowbtns"><button id="btnImport" class="primary">导入</button></div>
@@ -948,12 +954,40 @@ async function loadSettings() {
     try {
       await api('/api/members/add', {
         method: 'POST',
-        body: { name, groupId: $('#mbGroup').value, password: $('#mbPass').value || undefined },
+        body: {
+          name,
+          groupId: $('#mbGroup').value,
+          password: $('#mbPass').value || undefined,
+          code: $('#mbCode').value.trim() || undefined,
+        },
       });
       toast(`已添加成员「${name}」✅`, 'ok');
       loadSettings();
     } catch (e) { toast(e.message, 'error'); }
   };
+  $$('.rn').forEach((b) => {
+    b.onclick = () => {
+      showModal(`改名 · ${esc(b.dataset.name)}`, `
+        <label>姓名（登录与界面/飞书显示用）</label>
+        <input id="rnName" maxlength="20" value="${esc(b.dataset.name)}">
+        <label>代号（排班规则 md 与 AI 识别用，组内唯一；规则里写代号就改姓名无需改规则）</label>
+        <input id="rnCode" maxlength="10" value="${esc(b.dataset.code)}" placeholder="如 a、b、c">
+        <p class="hint">改名后：排班表、统计、飞书卡片自动显示新姓名，名下有排班的周自动重发飞书；现有登录状态不受影响，下次登录请使用新姓名。</p>
+        <div class="rowbtns"><button id="rnSave" class="primary">保存</button><button id="rnCancel" class="ghost">取消</button></div>`);
+      $('#rnCancel').onclick = closeModal;
+      $('#rnSave').onclick = async () => {
+        try {
+          await api('/api/members/rename', {
+            method: 'POST',
+            body: { personId: b.dataset.id, name: $('#rnName').value.trim(), code: $('#rnCode').value.trim() },
+          });
+          toast(`已保存：${$('#rnName').value.trim()}（代号 ${$('#rnCode').value.trim() || '无'}）✅`, 'ok');
+          closeModal();
+          loadSettings();
+        } catch (e) { toast(e.message, 'error'); }
+      };
+    };
+  });
   $$('.rm').forEach((b) => {
     b.onclick = async () => {
       const name = b.dataset.name;

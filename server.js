@@ -338,7 +338,9 @@ app.post('/api/import', auth.requireAdmin, (req, res) => {
     if (!names.length) { errors.push(`第 ${idx + 1} 行没有人员姓名`); return; }
     const byGroup = {};
     for (const nm of names) {
-      const p = store.personByName(nm);
+      // 优先按姓名匹配，匹配不到再按代号（方便直接粘贴规则里的 a/b/c）
+      const p = store.personByName(nm)
+        || db.people.find((x) => x.code && x.code.toLowerCase() === nm.toLowerCase());
       if (!p) { errors.push(`第 ${idx + 1} 行人员不存在：${nm}`); return; }
       (byGroup[p.groupId] = byGroup[p.groupId] || []).push(p);
     }
@@ -366,18 +368,36 @@ app.post('/api/clear', auth.requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// —— 管理员：成员管理（增减 / 换组）——
+// —— 管理员：成员管理（增减 / 改名 / 换组）——
 app.get('/api/members', auth.requireAdmin, (req, res) => {
   const db = store.data;
   res.json({
     groups: db.groups.map((g) => ({ id: g.id, name: g.name })),
-    people: db.people.map((p) => ({ id: p.id, name: p.name, groupId: p.groupId })),
+    people: db.people.map((p) => ({ id: p.id, name: p.name, code: p.code || '', groupId: p.groupId })),
     defaultPassword: DEFAULT_USER_PASSWORD,
   });
 });
 
+// 组内下一个未用的字母代号（a~z）
+function nextCode(db, groupId) {
+  const used = new Set(db.people
+    .filter((p) => p.groupId === groupId && p.code)
+    .map((p) => p.code.toLowerCase()));
+  for (const ch of 'abcdefghijklmnopqrstuvwxyz') {
+    if (!used.has(ch)) return ch;
+  }
+  return '';
+}
+
+function codeClash(db, groupId, code, exceptId) {
+  const c = String(code || '').trim().toLowerCase();
+  if (!c) return null;
+  return db.people.find((p) => p.id !== exceptId && p.groupId === groupId
+    && p.code && p.code.toLowerCase() === c) || null;
+}
+
 app.post('/api/members/add', auth.requireAdmin, (req, res) => {
-  const { name, groupId, password } = req.body || {};
+  const { name, groupId, password, code } = req.body || {};
   const n = String(name || '').trim();
   if (!n) return res.status(400).json({ error: '请输入姓名' });
   if (n.length > 20) return res.status(400).json({ error: '姓名过长（20 字以内）' });
@@ -386,12 +406,53 @@ app.post('/api/members/add', auth.requireAdmin, (req, res) => {
   if (store.personByName(n)) return res.status(400).json({ error: `姓名「${n}」已存在` });
   const pwd = password ? String(password) : DEFAULT_USER_PASSWORD;
   if (pwd.length < 4) return res.status(400).json({ error: '初始密码至少 4 位' });
-  const person = makePerson(n, pwd, groupId);
+  let cd = String(code || '').trim();
+  if (cd) {
+    if (cd.length > 10) return res.status(400).json({ error: '代号过长（10 字以内）' });
+    if (codeClash(db, groupId, cd, null)) return res.status(400).json({ error: `代号「${cd}」已在本组使用` });
+  } else {
+    cd = nextCode(db, groupId);
+  }
+  const person = makePerson(n, pwd, groupId, cd);
   db.people.push(person);
   store.addLog(req.auth.name, 'admin', '添加成员',
-    `${n} 加入「${gname(groupId)}」（初始密码：${password ? '已单独设置' : '默认 ' + DEFAULT_USER_PASSWORD}，请登录后修改）`);
+    `${n}（代号 ${cd || '无'}）加入「${gname(groupId)}」（初始密码：${password ? '已单独设置' : '默认 ' + DEFAULT_USER_PASSWORD}，请登录后修改）`);
   store.save();
-  res.json({ ok: true, person: { id: person.id, name: person.name, groupId } });
+  res.json({ ok: true, person: { id: person.id, name: person.name, code: cd, groupId } });
+});
+
+// 改名：姓名（登录/显示）与代号（规则 md / AI 识别）分开；排班存的是内部 ID，改名自动生效
+app.post('/api/members/rename', auth.requireAdmin, (req, res) => {
+  const { personId, name, code } = req.body || {};
+  const db = store.data;
+  const p = store.personById(personId);
+  if (!p) return res.status(400).json({ error: '人员不存在' });
+  const newName = String(name || '').trim();
+  if (!newName || newName.length > 20) return res.status(400).json({ error: '姓名需 1-20 字' });
+  const clash = db.people.find((x) => x.id !== personId && x.name.toLowerCase() === newName.toLowerCase());
+  if (clash) return res.status(400).json({ error: `姓名「${newName}」已存在` });
+  const newCode = String(code ?? '').trim();
+  if (newCode && newCode.length > 10) return res.status(400).json({ error: '代号过长（10 字以内）' });
+  if (newCode && codeClash(db, p.groupId, newCode, personId)) {
+    return res.status(400).json({ error: `代号「${newCode}」已在本组使用` });
+  }
+  const affected = sch.personDates(db, personId); // 名下有排班的日期（重发飞书用）
+  const changes = [];
+  if (p.name !== newName) changes.push(`姓名：${p.name} → ${newName}`);
+  if ((p.code || '') !== newCode) changes.push(`代号：${p.code || '（无）'} → ${newCode || '（无）'}`);
+  if (!changes.length) return res.status(400).json({ error: '没有变化' });
+  p.name = newName;
+  p.code = newCode;
+  let sess = 0; // 同步该用户在线会话里的显示名
+  for (const s of Object.values(store.sessions)) {
+    if (s.role === 'user' && s.userId === personId) { s.name = newName; sess += 1; }
+  }
+  store.saveSessions();
+  store.addLog(req.auth.name, 'admin', '成员改名',
+    `${newName}（${gname(p.groupId)}，代号 ${newCode || '无'}）：${changes.join('；')}，排班显示自动更新`);
+  store.save();
+  if (affected.length) queueResendsFor(affected, '成员改名后自动重发');
+  res.json({ ok: true, sessions: sess });
 });
 
 app.post('/api/members/remove', auth.requireAdmin, (req, res) => {

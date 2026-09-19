@@ -113,12 +113,13 @@ app.post('/api/login', (req, res) => {
   if (person && auth.verifyPassword(password, person.salt, person.passwordHash)) {
     auth.clearFails(key);
     const token = auth.createSession(store, { role: 'user', userId: person.id, name: person.name });
-    return res.json({ token, me: { role: 'user', name: person.name } });
+    // me 必须带 userId：前端刚登录就要靠它在成员列表里认出"自己"（没有它会提示账号信息异常）
+    return res.json({ token, me: { role: 'user', userId: person.id, name: person.name } });
   }
   if (/^admin$/i.test(String(name)) && auth.verifyPassword(password, cfg().adminSalt, cfg().adminPasswordHash)) {
     auth.clearFails(key);
     const token = auth.createSession(store, { role: 'admin', userId: 'admin', name: '管理员' });
-    return res.json({ token, me: { role: 'admin', name: '管理员' } });
+    return res.json({ token, me: { role: 'admin', userId: 'admin', name: '管理员' } });
   }
   auth.recordFail(key);
   res.status(401).json({ error: '姓名或密码错误' });

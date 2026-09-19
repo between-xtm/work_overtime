@@ -220,6 +220,8 @@ function visibleGroups() {
 async function loadSchedule() {
   const d = await api('/api/schedule?week=' + state.weekStart);
   state.data = d;
+  // 用会话里的最新身份兜底（含 userId；改名后 name 也会同步）
+  if (d.me && d.me.userId) state.me = d.me;
   const curWs = weekStartOf(todayStr());
   const isAdmin = state.me.role === 'admin';
 

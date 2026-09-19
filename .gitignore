@@ -1,0 +1,11 @@
+# 运行数据：db.json 含密码散列与 API Key、sessions.json 含登录令牌，禁止入库
+data/
+
+# 日志
+*.log
+
+# 依赖
+node_modules/
+
+# CLI 会话与自动保存
+.codely-cli/

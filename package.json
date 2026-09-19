@@ -1,0 +1,15 @@
+{
+  "name": "overtime-roster",
+  "version": "1.0.0",
+  "private": true,
+  "description": "加班排班表：网页修改 + 飞书自动推送 + 每周一定时发送 + 管理员工时统计",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mock": "node mock-webhook.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3"
+  }
+}

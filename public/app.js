@@ -209,6 +209,12 @@ function dayPeople(day, gid) {
   const slot = day && day.groups ? day.groups[gid] : null;
   return (slot && slot.people) || [];
 }
+// 显示用组列表：只显示有成员的组（没人=没人能认领，显示"待认领"是误导）；全都没成员时兜底全显示
+function visibleGroups() {
+  const gs = (state.data && state.data.groups) || [];
+  const withMembers = gs.filter((g) => g.memberCount > 0);
+  return withMembers.length ? withMembers : gs;
+}
 
 /* ================= 排班 ================= */
 async function loadSchedule() {
@@ -223,17 +229,17 @@ async function loadSchedule() {
     const myList = myP ? dayPeople(day, myP.groupId) : [];
     const mine = myP && myList.some((p) => p.personId === state.me.userId);
     const cls = ['day', today && 'is-today', mine && 'is-mine'].filter(Boolean).join(' ');
-    const rows = d.groups.map((g, gi) => {
+    const rows = visibleGroups().map((g, gi) => {
       const people = dayPeople(day, g.id);
       const rowMine = myP && g.id === myP.groupId && people.some((x) => x.personId === state.me.userId);
       const title = people.length
         ? `${g.name}：${people.map((p) => `${p.name}（${p.hours}h${p.note ? '，' + p.note : ''}）`).join('、')}`
-        : `${g.name}：空缺，待认领`;
+        : `${g.name}：空缺`;
       const meta = people.length > 1 ? `${people.length}人` : (people.length === 1 ? `${people[0].hours}h` : '');
       return `
         <div class="g-row ${rowMine ? 'is-mine' : ''} ${!people.length ? 'is-empty' : ''}" title="${esc(title)}">
           <span class="g-tag gtag-${gi % 2}">${esc(g.name)}</span>
-          <span class="g-name">${people.length ? people.map((p) => esc(p.name)).join('、') : '待认领'}</span>
+          <span class="g-name">${people.length ? people.map((p) => esc(p.name)).join('、') : '空缺'}</span>
           <span class="g-meta">${meta}</span>
         </div>`;
     }).join('');
@@ -245,7 +251,8 @@ async function loadSchedule() {
       </div>`;
   }).join('');
 
-  const ungen = (d.groups || []).filter((g) => g.memberCount > 0 && d.generatedMap && !d.generatedMap[g.id]);
+  // 「未生成」只提示开了自动轮换的组（关轮换的组本来就不自动生成，提示会永远挂着）
+  const ungen = (d.groups || []).filter((g) => g.memberCount > 0 && g.autoRotate !== false && d.generatedMap && !d.generatedMap[g.id]);
 
   $('#view').innerHTML = `
     <div class="weeknav">
@@ -277,7 +284,7 @@ function sendBarHtml(d) {
 }
 
 function dayInfoHtml(day) {
-  const parts = (state.data.groups || []).map((g) => {
+  const parts = visibleGroups().map((g) => {
     const people = dayPeople(day, g.id);
     return `${esc(g.name)}：${people.length
       ? people.map((p) => `<b>${esc(p.name)}</b>（${p.hours}h${p.note ? '，' + esc(p.note) : ''}）`).join('、')
@@ -410,7 +417,7 @@ function bindSlotRows(gid) {
 }
 
 function openAdminDayModal(day, info) {
-  const groups = state.data.groups || [];
+  const groups = visibleGroups();
   const blocks = groups.map((g) => {
     const people = dayPeople(day, g.id);
     return `
@@ -545,6 +552,7 @@ function renderStats() {
 
 function fairnessNote(rows) {
   if (!rows.length) return '';
+  if (rows.every((r) => r.hours === 0)) return '<p class="hint">暂无排班数据（该组清空后还没有生成/导入过排班）。</p>';
   const hs = rows.map((r) => r.hours);
   const max = Math.max(...hs), min = Math.min(...hs);
   const diff = max - min;
@@ -635,7 +643,7 @@ function renderAi() {
 
     <div class="card">
       <h3>⚡ 夜间检查（逐组独立，会带上该组规则）</h3>
-      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动逐组检查未来 ${state.config ? state.config.aiCheckDays : 14} 天排班：出现<b>无人排班/班次不均/与规则不符</b>时，由 DeepSeek 按该组规则给出最小改动建议。${modeLine}</p>
+      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动逐组检查未来 ${state.config ? state.config.aiCheckDays : 14} 天<b>已排班</b>的周：出现<b>无人排班/班次不均/与规则不符</b>时，由 DeepSeek 按该组规则给出最小改动建议；还没排班的空周不提醒（等你在上面生成）。${modeLine}</p>
       <button id="btnAiCheck" class="primary">⚡ 立即运行 AI 检查</button>
       <span class="inline-note" id="aiCheckHint"></span>
     </div>
@@ -702,8 +710,9 @@ function renderAi() {
       } else {
         const parts = (r.results || []).map((x) =>
           x.error ? `${x.name}：失败（${x.error}）`
-            : x.needChange ? `${x.name}：${x.auto ? '已自动应用 ✅' : '有待确认的建议'}`
-              : `${x.name}：无需变动`);
+            : x.skipped ? `${x.name}：尚无已排班的周，跳过`
+              : x.needChange ? `${x.name}：${x.auto ? '已自动应用 ✅' : '有待确认的建议'}`
+                : `${x.name}：无需变动`);
         toast(parts.join('；') || '检查完成', r.needChange ? 'info' : 'ok', 5000);
       }
       loadAi();

@@ -31,6 +31,8 @@ const state = {
   weekStart: null,
   data: null,        // 当前周排班响应
   config: null,
+  members: null,     // /api/members 响应（管理员）
+  promptMd: '',
   stats: null,
   statsMode: 'all',
   suggestions: null,
@@ -105,8 +107,8 @@ function afterMutation(r) {
 
 /* —— 登录页 —— */
 async function renderLogin() {
-  let names = [];
-  try { names = (await api('/api/people')).people; } catch { /* 忽略 */ }
+  let people = [];
+  try { people = (await api('/api/people')).people; } catch { /* 忽略 */ }
   $('#app').innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
@@ -115,7 +117,7 @@ async function renderLogin() {
         <label>我是</label>
         <div class="row">
           <select id="loginName">
-            ${names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+            ${people.map((n) => `<option value="${esc(n.name)}">${esc(n.name)}${n.group ? '（' + esc(n.group) + '）' : ''}</option>`).join('')}
             <option value="admin">管理员</option>
           </select>
         </div>
@@ -123,7 +125,7 @@ async function renderLogin() {
         <input id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password">
         <div style="height:16px"></div>
         <button id="btnLogin" class="primary big">登 录</button>
-        <p class="hint" style="text-align:center;margin-top:14px">测试阶段初始密码：成员 123456 / 管理员 admin123<br>登录后请到「密码」页修改</p>
+        <p class="hint" style="text-align:center;margin-top:14px">成员由管理员在「设置→成员管理」增减<br>新成员初始密码默认 123456，登录后请到「密码」页修改</p>
       </div>
     </div>`;
   $('#btnLogin').onclick = doLogin;
@@ -155,7 +157,7 @@ function renderShell() {
     ['schedule', '📅 排班'],
     ...(isAdmin ? [
       ['stats', '📊 统计'],
-      ['ai', '🤖 AI建议'],
+      ['ai', '🪄 AI排班'],
       ['settings', '⚙️ 设置'],
       ['logs', '📝 日志'],
     ] : []),
@@ -192,6 +194,17 @@ function loadTab() {
   }
 }
 
+/* —— 当前登录成员所在组 / 组名 —— */
+function myPerson() {
+  if (!state.data || state.me.role !== 'user') return null;
+  return state.data.people.find((p) => p.id === state.me.userId) || null;
+}
+function groupName(id) {
+  if (!state.data || !Array.isArray(state.data.groups)) return '';
+  const g = state.data.groups.find((x) => x.id === id);
+  return g ? g.name : '';
+}
+
 /* ================= 排班 ================= */
 async function loadSchedule() {
   const d = await api('/api/schedule?week=' + state.weekStart);
@@ -200,31 +213,47 @@ async function loadSchedule() {
   const isAdmin = state.me.role === 'admin';
 
   const cards = d.days.map((day) => {
-    const mine = state.me.role === 'user' && day.personId === state.me.userId;
     const today = day.date === d.today;
-    const cls = ['day', today && 'is-today', mine && 'is-mine', !day.name && 'is-empty']
-      .filter(Boolean).join(' ');
+    const myP = myPerson();
+    const mine = myP && day.groups[myP.groupId] && day.groups[myP.groupId].personId === state.me.userId;
+    const cls = ['day', today && 'is-today', mine && 'is-mine'].filter(Boolean).join(' ');
+    const rows = d.groups.map((g, gi) => {
+      const e = day.groups[g.id];
+      const rowMine = myP && g.id === myP.groupId && e && e.personId === state.me.userId;
+      const title = e
+        ? `${g.name}：${e.name}（${e.hours}h${e.note ? '，' + e.note : ''}）`
+        : `${g.name}：空缺，待认领`;
+      return `
+        <div class="g-row ${rowMine ? 'is-mine' : ''} ${!e ? 'is-empty' : ''}" title="${esc(title)}">
+          <span class="g-tag gtag-${gi % 2}">${esc(g.name)}</span>
+          <span class="g-name">${e ? esc(e.name) : '待认领'}</span>
+          <span class="g-meta">${e ? e.hours + 'h' : ''}</span>
+        </div>`;
+    }).join('');
     return `
       <div class="${cls}" data-date="${day.date}">
-        ${mine ? '<span class="badge">我的班</span>' : (!day.name ? '<span class="badge empty">空缺</span>' : '')}
+        ${mine ? '<span class="badge">我的班</span>' : ''}
         <div class="day-head"><span>${day.weekday}</span><span>${fmtShort(day.date)}</span></div>
-        <div class="day-name">${day.name ? esc(day.name) : '待认领'}</div>
-        <div class="day-meta">${day.name ? `${day.hours}h${day.note ? ' · ' + esc(day.note) : ''}` : '点击认领'}</div>
+        ${rows}
       </div>`;
   }).join('');
+
+  const ungen = (d.groups || []).filter((g) => g.memberCount > 0 && d.generatedMap && !d.generatedMap[g.id]);
 
   $('#view').innerHTML = `
     <div class="weeknav">
       <button id="wPrev">◀ 上周</button>
       <div class="weektitle">${fmtShort(d.weekStart)} – ${fmtShort(addDays(d.weekStart, 6))}
-        <small>${d.isoWeek.year}年第${d.isoWeek.week}周${d.weekStart === curWs ? ' · 本周' : ''}${d.config.generated ? '' : ' · 未生成'}</small>
+        <small>${d.isoWeek.year}年第${d.isoWeek.week}周${d.weekStart === curWs ? ' · 本周' : ''}${ungen.length ? ' · 未生成：' + ungen.map((g) => esc(g.name)).join('、') : ''}</small>
       </div>
       <button id="wNext">下周 ▶</button>
       <button id="wToday" class="ghost">回到本周</button>
     </div>
     <div class="daygrid">${cards}</div>
     <div class="sendbar">${sendBarHtml(d)}</div>
-    ${isAdmin ? '<p class="hint">管理员提示：点击日期可指派/清空/备注；换班记录见「日志」。</p>' : '<p class="hint">提示：点击自己的班可换班/弃班，点击空缺的日期可认领。</p>'}`;
+    ${isAdmin
+      ? '<p class="hint">管理员提示：点击日期可按组指派/清空/备注/重新生成；两组互不影响，各排各的。</p>'
+      : '<p class="hint">提示：每天两组各有一班。点击日期可处理<b>自己组</b>的班：换班/弃班/认领空缺。</p>'}`;
 
   $('#wPrev').onclick = () => { state.weekStart = addDays(state.weekStart, -7); loadSchedule(); };
   $('#wNext').onclick = () => { state.weekStart = addDays(state.weekStart, 7); loadSchedule(); };
@@ -240,18 +269,33 @@ function sendBarHtml(d) {
     ${s.ok ? '<span class="ok">成功</span>' : `<span class="bad">失败：${esc(s.error || '')}</span>`}`;
 }
 
+function dayInfoHtml(day) {
+  const parts = (state.data.groups || []).map((g) => {
+    const e = day.groups[g.id];
+    return `${esc(g.name)}：${e
+      ? `<b>${esc(e.name)}</b>（${e.hours}h${e.note ? '，' + esc(e.note) : ''}）`
+      : '空缺'}`;
+  }).join(' · ');
+  return `<div class="dayinfo"><b>${day.weekday} ${day.date}</b><br>${parts}</div>`;
+}
+
 function openDayModal(date) {
   const day = state.data.days.find((x) => x.date === date);
   if (!day) return;
   const isAdmin = state.me.role === 'admin';
-  const mine = state.me.role === 'user' && day.personId === state.me.userId;
-  const info = `<div class="dayinfo"><b>${day.weekday} ${day.date}</b> · ${day.name ? `当前：<b>${esc(day.name)}</b>（${day.hours}h${day.note ? '，' + esc(day.note) : ''}）` : '当前：空缺'}</div>`;
+  const info = dayInfoHtml(day);
 
   if (isAdmin) return openAdminDayModal(day, info);
 
+  const myP = myPerson();
+  const myG = myP ? day.groups[myP.groupId] : null;
+  const gName = myP ? groupName(myP.groupId) : '';
+  const mine = myG && myG.personId === state.me.userId;
+
   let body;
-  if (mine) {
+  if (myP && mine) {
     body = `${info}
+      <p class="hint">这是你在「${esc(gName)}」的班。</p>
       <div class="rowbtns">
         <button id="aSwap" class="primary">🔄 和别人换班</button>
         <button id="aRelease" class="danger">🚫 弃班（留空待认领）</button>
@@ -259,28 +303,31 @@ function openDayModal(date) {
     showModal(day.date + ' · 我的班', body);
     $('#aSwap').onclick = () => openSwapPicker(date);
     $('#aRelease').onclick = async () => {
-      if (await confirmModal(`确认放弃 <b>${day.weekday} ${day.date}</b> 的班？<br>放弃后该天空缺，其他人可认领。`)) {
+      if (await confirmModal(`确认放弃 <b>${day.weekday} ${day.date}</b>（${esc(gName)}）的班？<br>放弃后该组该天空缺，其他人可认领。`)) {
         afterMutation(await api('/api/release', { method: 'POST', body: { date } }));
         loadSchedule();
       }
     };
-  } else if (day.personId) {
+  } else if (myP && myG) {
     body = `${info}
       <div class="rowbtns">
-        <button id="aSwap" class="primary">🔄 和 ${esc(day.name)} 换班</button>
+        <button id="aSwap" class="primary">🔄 和 ${esc(gName)}的${esc(myG.name)}换班</button>
       </div>`;
     showModal(day.date + ' · 排班详情', body);
     $('#aSwap').onclick = () => openSwapPicker(date);
-  } else {
+  } else if (myP) {
     body = `${info}
+      <p class="hint">你的组（${esc(gName)}）该天空缺。</p>
       <div class="rowbtns">
-        <button id="aClaim" class="primary">✋ 认领这个班</button>
+        <button id="aClaim" class="primary">✋ 认领这个班（${esc(gName)}）</button>
       </div>`;
     showModal(day.date + ' · 空缺', body);
     $('#aClaim').onclick = async () => {
       afterMutation(await api('/api/claim', { method: 'POST', body: { date } }));
       loadSchedule();
     };
+  } else {
+    showModal(day.date + ' · 排班详情', info + '<p class="hint">账号信息异常，请联系管理员。</p>');
   }
 }
 
@@ -290,11 +337,11 @@ async function openSwapPicker(targetDate) {
   const opts = days.filter((x) => x.date !== targetDate);
   if (!opts.length) return toast('你没有其他班可以换', 'warn');
   showModal('选择我要换出的日期', `
-    <p class="hint">用我的哪个班，和 <b>${targetDate}</b> 的班交换？</p>
+    <p class="hint">用我的哪个班，和 <b>${targetDate}</b> 的班交换？（只能和本组成员的班互换）</p>
     <div class="picklist">
       ${opts.map((o) => `
         <button data-date="${o.date}">
-          <span>${WEEKDAY[dowIdx(o.date)]} ${o.date}（${o.hours}h）</span>
+          <span>${WEEKDAY[dowIdx(o.date)]} ${o.date}（${o.hours}h${o.groupId ? ' · ' + esc(groupName(o.groupId)) : ''}）</span>
           <span class="r">当前：${esc(o.name)}</span>
         </button>`).join('')}
     </div>`);
@@ -312,52 +359,77 @@ async function openSwapPicker(targetDate) {
 }
 
 function openAdminDayModal(day, info) {
-  const peopleOpts = ['<option value="">— 空缺 —</option>']
-    .concat(state.data.people.map((p) =>
-      `<option value="${p.id}" ${p.id === day.personId ? 'selected' : ''}>${esc(p.name)}</option>`))
-    .join('');
+  const groups = state.data.groups || [];
+  const blocks = groups.map((g) => {
+    const e = day.groups[g.id];
+    const members = state.data.people.filter((p) => p.groupId === g.id);
+    const opts = ['<option value="">— 空缺 —</option>']
+      .concat(members.map((p) => `<option value="${p.id}" ${e && e.personId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`))
+      .join('');
+    return `
+      <div class="grp-edit">
+        <label><b>${esc(g.name)}</b>（${members.length} 人）· 指派人员</label>
+        <select id="mPerson_${g.id}">${opts}</select>
+        <div class="grp-inline">
+          <div><label>工时（空 = 默认 ${state.data.config.shiftHours}h）</label>
+            <input id="mHours_${g.id}" type="number" step="0.5" min="0.5" max="24" value="${e ? e.hours : ''}"></div>
+          <div><label>备注（可选）</label>
+            <input id="mNote_${g.id}" maxlength="100" value="${e ? esc(e.note) : ''}"></div>
+        </div>
+        <button id="mSave_${g.id}" class="primary" style="margin-top:10px">保存「${esc(g.name)}」</button>
+      </div>`;
+  }).join('');
+
   showModal(`管理员编辑 · ${day.date}`, `
     ${info}
-    <label>指派人员</label>
-    <select id="mPerson">${peopleOpts}</select>
-    <label>工时（留空 = 默认 ${state.data.config.shiftHours}h）</label>
-    <input id="mHours" type="number" step="0.5" min="0.5" max="24" value="${day.hours ?? ''}">
-    <label>备注（可选）</label>
-    <input id="mNote" maxlength="100" value="${esc(day.note)}">
+    ${blocks}
     <div class="rowbtns">
-      <button id="mSave" class="primary">保存</button>
-      <button id="mClear" class="ghost">清空此天</button>
-      <button id="mRegen" class="ghost">重新生成本周</button>
+      <button id="mClearAll" class="ghost">清空整天（两组）</button>
+      ${groups.map((g) => `<button class="ghost mRegen" data-gid="${g.id}">按轮换重排本周·${esc(g.name)}</button>`).join('')}
     </div>`);
-  $('#mSave').onclick = async () => {
-    try {
-      const r = await api('/api/set', {
-        method: 'POST',
-        body: {
-          date: day.date,
-          personId: $('#mPerson').value || null,
-          hours: $('#mHours').value || undefined,
-          note: $('#mNote').value.trim(),
-        },
-      });
-      afterMutation(r);
-      loadSchedule();
-    } catch (e) { toast(e.message, 'error'); }
-  };
-  $('#mClear').onclick = async () => {
-    try {
-      afterMutation(await api('/api/set', { method: 'POST', body: { date: day.date, personId: null } }));
-      loadSchedule();
-    } catch (e) { toast(e.message, 'error'); }
-  };
-  $('#mRegen').onclick = async () => {
-    if (await confirmModal('重新生成本周会<b>清空本周全部排班</b>并按轮换规则重排，确认？')) {
+
+  groups.forEach((g) => {
+    $('#mSave_' + g.id).onclick = async () => {
       try {
-        afterMutation(await api('/api/regen', { method: 'POST', body: { weekStart: state.data.weekStart } }));
+        const r = await api('/api/set', {
+          method: 'POST',
+          body: {
+            date: day.date,
+            groupId: g.id,
+            personId: $('#mPerson_' + g.id).value || null,
+            hours: $('#mHours_' + g.id).value || undefined,
+            note: $('#mNote_' + g.id).value.trim(),
+          },
+        });
+        afterMutation(r);
         loadSchedule();
       } catch (e) { toast(e.message, 'error'); }
-    }
+    };
+  });
+
+  $('#mClearAll').onclick = async () => {
+    let last;
+    try {
+      for (const g of groups) {
+        last = await api('/api/set', { method: 'POST', body: { date: day.date, groupId: g.id, personId: null } });
+      }
+      afterMutation(last);
+      loadSchedule();
+    } catch (e) { toast(e.message, 'error'); }
   };
+
+  $$('.mRegen').forEach((b) => {
+    b.onclick = async () => {
+      const gid = b.dataset.gid;
+      const g = groups.find((x) => x.id === gid) || {};
+      if (await confirmModal(`重新生成本周「${esc(g.name)}」会<b>清空该组本周全部排班</b>并按轮换规则重排，确认？`)) {
+        try {
+          afterMutation(await api('/api/regen', { method: 'POST', body: { weekStart: state.data.weekStart, groupId: gid } }));
+          loadSchedule();
+        } catch (e) { toast(e.message, 'error'); }
+      }
+    };
+  });
 }
 
 /* ================= 统计（管理员） ================= */
@@ -379,32 +451,44 @@ function renderStats() {
     if (state.statsMode === 'month') return { shifts: p.monthShifts, hours: p.monthHours, avg: null };
     return { shifts: p.shifts, hours: p.hours, avg: p.avgWeek };
   };
-  const rows = s.people.map((p) => ({ ...get(p), name: p.name }));
-  const maxH = Math.max(1, ...rows.map((r) => r.hours));
-  const weeksLabel = state.statsMode === 'past' ? s.weeksPast : state.statsMode === 'month' ? '—' : s.weeksAll;
+
+  const groupCards = s.groups.map((g) => {
+    const rows = g.members.map((p) => ({ ...get(p), name: p.name }));
+    const weeksLabel = state.statsMode === 'past' ? g.weeksPast : state.statsMode === 'month' ? '—' : g.weeksAll;
+    if (!rows.length) {
+      return `<div class="card"><h3>${esc(g.name)}</h3><p class="hint">该组暂无成员，无排班数据。</p></div>`;
+    }
+    const maxH = Math.max(1, ...rows.map((r) => r.hours));
+    return `
+      <div class="card">
+        <h3>${esc(g.name)}（${g.members.length} 人）</h3>
+        <p class="hint">覆盖 ${weeksLabel} 周 · 每班默认 ${s.shiftHours}h（个别班次可按天覆盖工时）</p>
+        <table>
+          <thead><tr><th>姓名</th><th>班次</th><th>工时</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td><b>${esc(r.name)}</b></td>
+                <td>${r.shifts}</td>
+                <td>${r.hours}h</td>
+                <td>${r.avg === null ? '—' : r.avg + 'h'}</td>
+                <td><div class="bar-wrap"><div class="bar" style="width:${Math.round(r.hours / maxH * 100)}%"></div></div></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        ${fairnessNote(rows)}
+      </div>`;
+  }).join('');
 
   $('#view').innerHTML = `
     <div class="card">
       <h3>人均工时统计</h3>
-      <p class="hint">统计起始：${s.since || '暂无数据'} · 覆盖 ${weeksLabel} 周 · 每班默认 ${s.shiftHours}h（${esc('9:00-18:00 类班次')}，个别班次可按天覆盖工时）</p>
+      <p class="hint">统计起始：${s.since || '暂无数据'} · 两个组独立排班、独立统计，互不影响。</p>
       <div class="seg">
         ${modes.map(([k, l]) => `<button class="${state.statsMode === k ? 'active' : ''}" data-mode="${k}">${l}</button>`).join('')}
       </div>
-      <table>
-        <thead><tr><th>姓名</th><th>班次</th><th>工时</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
-        <tbody>
-          ${rows.map((r) => `
-            <tr>
-              <td><b>${esc(r.name)}</b></td>
-              <td>${r.shifts}</td>
-              <td>${r.hours}h</td>
-              <td>${r.avg === null ? '—' : r.avg + 'h'}</td>
-              <td><div class="bar-wrap"><div class="bar" style="width:${Math.round(r.hours / maxH * 100)}%"></div></div></td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-      ${fairnessNote(rows)}
-    </div>`;
+    </div>
+    ${groupCards}`;
   $$('.seg button').forEach((b) => {
     b.onclick = () => { state.statsMode = b.dataset.mode; renderStats(); };
   });
@@ -421,34 +505,132 @@ function fairnessNote(rows) {
   return `<p class="hint">公平性：最多 ${esc(maxP.name)} ${max}h / 最少 ${esc(minP.name)} ${min}h，相差 ${diff}h —— ${level}</p>`;
 }
 
-/* ================= AI 建议（管理员） ================= */
+/* ================= AI 排班（管理员） ================= */
 async function loadAi() {
-  const [r, c] = await Promise.all([api('/api/ai/suggestions'), api('/api/config')]);
+  const [r, c, p, m] = await Promise.all([
+    api('/api/ai/suggestions'), api('/api/config'), api('/api/ai/prompt'), api('/api/members'),
+  ]);
   state.suggestions = r.suggestions;
   state.config = c;
+  state.promptMd = p.md;
+  state.members = m;
   renderAi();
 }
 
 function renderAi() {
   const sug = state.suggestions || [];
+  const groups = (state.members && state.members.groups) || [];
+  const defWeek = weekStartOf(addDays(todayStr(), 7)); // 默认下周一
+  const modeLine = state.config && state.config.aiApplyMode === 'auto'
+    ? '当前模式：<b style="color:var(--ok)">自动应用</b>（建议生成后直接生效并重发飞书）'
+    : '当前模式：<b>通知确认</b>（建议生成后需在此确认应用）';
+
   $('#view').innerHTML = `
     <div class="card">
-      <h3>🤖 DeepSeek 夜间检查</h3>
-      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动检查未来 ${state.config ? state.config.aiCheckDays : 14} 天排班：出现<b>空班</b>或<b>班次不均</b>时，由 DeepSeek 分析并给出最小改动建议。${
-        state.config && state.config.aiApplyMode === 'auto' ? '当前模式：<b style="color:var(--ok)">自动应用</b>（应用后自动重发飞书）' : '当前模式：<b>通知确认</b>（建议会发到飞书，需在这里确认应用）'
-      }</p>
+      <h3>📋 排班规则（Markdown）</h3>
+      <p class="hint">保存在服务器 <code>prompt_md/prompt.md</code>，下方显示当前内容，可直接编辑保存。AI 生成排班时以本规则为准；
+        若下方「补充要求」输入框里写了内容，则其优先级更高（用于临时微调，不必改这里的规则）。没有规则文件时，直接在这里写规则并保存即可。</p>
+      <textarea id="aiPromptMd" class="mono" rows="12" spellcheck="false"
+        placeholder="（暂无规则文件。可直接在此输入排班规则并点保存，例如：&#10;每天安排一人；每人班次尽量均衡；张三周末不值班…）">${esc(state.promptMd || '')}</textarea>
+      <div class="rowbtns">
+        <button id="btnSavePrompt" class="primary">保存规则</button>
+        <span class="inline-note" id="promptState"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🪄 AI 生成排班</h3>
+      <p class="hint">按上方规则让大模型为指定分组生成一段时间的排班；生成结果以「建议」形式展示（下方列表），确认应用后飞书自动重发。${modeLine}</p>
+      <div class="form-grid">
+        <div>
+          <label>分组</label>
+          <select id="genGroup">${groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select>
+        </div>
+        <div>
+          <label>开始日期（自动归到周一）</label>
+          <input id="genWeek" type="date" value="${defWeek}">
+        </div>
+        <div>
+          <label>生成周数</label>
+          <select id="genWeeks">
+            <option value="1" selected>1 周</option>
+            <option value="2">2 周</option>
+            <option value="3">3 周</option>
+            <option value="4">4 周</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button id="btnGen" class="primary big">🪄 生成排班</button>
+        </div>
+        <div class="full">
+          <label>补充要求（可选 · 优先级高于规则 md · 没有规则文件时这里就是规则）</label>
+          <textarea id="genInstr" rows="3" placeholder="例：这周三张三请假不要排他；周五该组统一不值班；优先照顾近期班次少的人"></textarea>
+        </div>
+      </div>
+      <p class="inline-note" id="genState"></p>
+    </div>
+
+    <div class="card">
+      <h3>⚡ 夜间检查（原有功能，逐组独立）</h3>
+      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动逐组检查未来 ${state.config ? state.config.aiCheckDays : 14} 天排班：出现<b>空班</b>或<b>班次不均</b>时，由 DeepSeek 分析并给出最小改动建议。${modeLine}</p>
       <button id="btnAiCheck" class="primary">⚡ 立即运行 AI 检查</button>
       <span class="inline-note" id="aiCheckHint"></span>
     </div>
+
+    <h3 class="listhead">建议列表</h3>
     ${sug.length ? sug.map(renderSug).join('') : '<div class="card"><p class="hint">暂无 AI 建议。排班均衡时夜检只记日志，不打扰。</p></div>'}`;
+
+  $('#btnSavePrompt').onclick = async () => {
+    try {
+      await api('/api/ai/prompt', { method: 'POST', body: { md: $('#aiPromptMd').value } });
+      state.promptMd = $('#aiPromptMd').value;
+      toast('排班规则已保存到 prompt_md/prompt.md ✅', 'ok');
+      $('#promptState').textContent = `已保存（${state.promptMd.length} 字）`;
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
+  $('#btnGen').onclick = async () => {
+    const btn = $('#btnGen');
+    btn.disabled = true;
+    $('#genState').textContent = 'AI 正在排班，约需几秒到几十秒…';
+    try {
+      const r = await api('/api/ai/generate', {
+        method: 'POST',
+        body: {
+          groupId: $('#genGroup').value,
+          weekStart: $('#genWeek').value || defWeek,
+          weeks: Number($('#genWeeks').value) || 1,
+          instruction: $('#genInstr').value.trim(),
+        },
+      });
+      if (r.needChange) {
+        toast(`AI 已生成排班建议${r.auto ? '并自动应用 ✅' : '，请在下方确认应用'}`, r.auto ? 'ok' : 'info');
+      } else {
+        toast(r.reason || 'AI 认为当前排班已符合规则 ✅', 'ok');
+      }
+      loadAi();
+    } catch (e) {
+      toast(e.message, 'error');
+      $('#genState').textContent = '';
+      btn.disabled = false;
+    }
+  };
+
   $('#btnAiCheck').onclick = async () => {
     $('#btnAiCheck').disabled = true;
     $('#aiCheckHint').textContent = '正在分析中，约需几秒…';
     try {
       const r = await api('/api/ai/check-now', { method: 'POST', body: {} });
-      if (r.skipped) toast('未配置 DeepSeek API Key，请先在「设置」中填写', 'warn');
-      else if (r.needChange) toast(`AI 建议：${r.auto ? '已自动应用 ✅' : '已生成，请确认应用'}`, r.auto ? 'ok' : 'info');
-      else toast('AI 分析：排班无需变动 ✅', 'ok');
+      if (r.skipped) {
+        toast('未配置 DeepSeek API Key，请先在「设置」中填写', 'warn');
+      } else {
+        const parts = (r.results || []).map((x) =>
+          x.error ? `${x.name}：失败（${x.error}）`
+            : x.needChange ? `${x.name}：${x.auto ? '已自动应用 ✅' : '有待确认的建议'}`
+              : `${x.name}：无需变动`);
+        toast(parts.join('；') || '检查完成', r.needChange ? 'info' : 'ok', 5000);
+      }
       loadAi();
     } catch (e) {
       toast(e.message, 'error');
@@ -456,6 +638,7 @@ function renderAi() {
       $('#btnAiCheck').disabled = false;
     }
   };
+
   $$('.sug-apply').forEach((b) => {
     b.onclick = async () => {
       if (await confirmModal('应用这条 AI 建议？应用后飞书会自动重发受影响的周。')) {
@@ -481,7 +664,10 @@ function renderAi() {
 function renderSug(s) {
   return `
     <div class="card">
-      <h3>建议 #${esc(s.id)} <span class="status-pill ${s.status}">${s.status === 'pending' ? '待确认' : s.status === 'applied' ? '已应用' : '已忽略'}</span></h3>
+      <h3>建议 #${esc(s.id)}
+        ${s.groupName ? `<span class="status-pill group">${esc(s.groupName)}</span>` : ''}
+        <span class="status-pill ${s.status}">${s.status === 'pending' ? '待确认' : s.status === 'applied' ? '已应用' : '已忽略'}</span>
+      </h3>
       <p class="hint">${esc(s.time)} · 触发：${esc(s.trigger)}</p>
       <p><b>原因：</b>${esc(s.reason)}</p>
       <div class="sug-changes">
@@ -498,9 +684,44 @@ function renderSug(s) {
 
 /* ================= 设置（管理员） ================= */
 async function loadSettings() {
-  const c = await api('/api/config');
+  const [c, m] = await Promise.all([api('/api/config'), api('/api/members')]);
   state.config = c;
+  state.members = m;
   const num = (v) => String(v ?? '');
+
+  const memberCard = `
+    <div class="card">
+      <h3>👥 成员管理</h3>
+      <p class="hint">两个组<b>独立排班、互不干扰</b>。<b>移除成员</b>＝删除账号并清空其名下全部排班（立即下线）；
+        <b>调整分组</b>会清空其原组排班，之后按新组轮换。新成员初始密码默认 <code>${esc(m.defaultPassword)}</code>，登录后可自行修改。</p>
+      ${m.groups.map((g) => {
+        const members = m.people.filter((p) => p.groupId === g.id);
+        const other = m.groups.find((x) => x.id !== g.id);
+        return `
+        <div class="member-group">
+          <h4>${esc(g.name)}（${members.length} 人）</h4>
+          ${members.length ? members.map((p) => `
+            <div class="member-row">
+              <span class="name">${esc(p.name)}</span>
+              ${other ? `<button class="ghost btn-sm mv" data-id="${p.id}" data-to="${other.id}" data-name="${esc(p.name)}" data-g="${esc(other.name)}">移到「${esc(other.name)}」</button>` : ''}
+              <button class="btn-sm softdanger rm" data-id="${p.id}" data-name="${esc(p.name)}">移除</button>
+            </div>`).join('') : '<p class="hint">暂无成员（该组不会自动排班，添加成员后自动补排未来 4 周）</p>'}
+        </div>`;
+      }).join('')}
+      <div class="section">
+        <h3>添加成员</h3>
+        <div class="form-grid">
+          <div><label>姓名</label><input id="mbName" maxlength="20" placeholder="新成员姓名"></div>
+          <div><label>加入分组</label>
+            <select id="mbGroup">${m.groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select>
+          </div>
+          <div><label>初始密码（空 = ${esc(m.defaultPassword)}）</label><input id="mbPass" placeholder="${esc(m.defaultPassword)}"></div>
+          <div><label>&nbsp;</label><button id="btnMemberAdd" class="primary">➕ 添加成员</button></div>
+        </div>
+        <p class="inline-note" id="memberState"></p>
+      </div>
+    </div>`;
+
   $('#view').innerHTML = `
     <div class="card">
       <h3>📨 飞书推送</h3>
@@ -547,7 +768,7 @@ async function loadSettings() {
         </div>
       </div>
       <div class="section">
-        <h3>🤖 DeepSeek 夜检</h3>
+        <h3>🤖 DeepSeek 配置（夜检 + AI排班共用）</h3>
         <div class="form-grid">
           <div class="full">
             <label>API Key${c.hasAiKey ? `（已配置 ${esc(c.aiKeyMask)}，输入新值覆盖，输入 CLEAR 删除）` : '（未配置）'}</label>
@@ -586,6 +807,8 @@ async function loadSettings() {
       <p class="hint">保存后如刚配置好 webhook，本周排班会立即补发一次。</p>
     </div>
 
+    ${memberCard}
+
     <div class="card">
       <h3>📤 手动发送</h3>
       <p class="hint">把当前浏览的周（本周）排班立即发到飞书，用于测试 webhook 配置。</p>
@@ -597,8 +820,8 @@ async function loadSettings() {
 
     <div class="card">
       <h3>📥 批量导入排班</h3>
-      <p class="hint">每行一条：<code>日期 姓名</code>（空格/逗号分隔），姓名填 <code>-</code> 表示清空该天。导入后自动重发飞书。给到具体排班表时用这个最快。</p>
-      <textarea id="impText" rows="6" placeholder="2026-09-21 A&#10;2026-09-22 B"></textarea>
+      <p class="hint">每行一条：<code>日期 姓名</code>（空格/逗号分隔），排到该成员所在组；姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
+      <textarea id="impText" rows="6" placeholder="2026-09-21 张三&#10;2026-09-22 李四"></textarea>
       <div class="rowbtns"><button id="btnImport" class="primary">导入</button></div>
       <div id="impResult" class="inline-note"></div>
     </div>
@@ -637,6 +860,44 @@ async function loadSettings() {
       loadSettings();
     } catch (e) { toast(e.message, 'error'); }
   };
+
+  // —— 成员管理 ——
+  $('#btnMemberAdd').onclick = async () => {
+    const name = $('#mbName').value.trim();
+    if (!name) return toast('请输入姓名', 'warn');
+    try {
+      await api('/api/members/add', {
+        method: 'POST',
+        body: { name, groupId: $('#mbGroup').value, password: $('#mbPass').value || undefined },
+      });
+      toast(`已添加成员「${name}」✅`, 'ok');
+      loadSettings();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  $$('.rm').forEach((b) => {
+    b.onclick = async () => {
+      const name = b.dataset.name;
+      if (await confirmModal(`确认移除成员 <b>${esc(name)}</b>？<br>移除后：账号删除、立即下线，名下<b>全部排班清空</b>（空缺待认领/重排）。此操作不可恢复。`)) {
+        try {
+          const r = await api('/api/members/remove', { method: 'POST', body: { personId: b.dataset.id } });
+          toast(`已移除「${name}」，清空其排班 ${r.cleared} 天`, 'ok');
+          loadSettings();
+        } catch (e) { toast(e.message, 'error'); }
+      }
+    };
+  });
+  $$('.mv').forEach((b) => {
+    b.onclick = async () => {
+      const name = b.dataset.name;
+      if (await confirmModal(`确认把 <b>${esc(name)}</b> 移到「${esc(b.dataset.g)}」？<br>原组名下排班会全部清空，之后按新组轮换。`)) {
+        try {
+          await api('/api/members/move', { method: 'POST', body: { personId: b.dataset.id, groupId: b.dataset.to } });
+          toast(`已把「${name}」移到「${b.dataset.g}」`, 'ok');
+          loadSettings();
+        } catch (e) { toast(e.message, 'error'); }
+      }
+    };
+  });
 
   $('#btnSendNow').onclick = async () => {
     $('#btnSendNow').disabled = true;

@@ -104,12 +104,27 @@ main#view { max-width: 980px; margin: 0 auto; padding: 16px 14px 60px; }
 .day-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .day.is-today { outline: 2px solid var(--primary); }
 .day.is-mine { background: var(--primary-soft); border-color: #c4d7ff; }
-.day.is-empty .day-name { color: #b6bec9; font-size: 15px; font-weight: 600; }
 .badge {
   position: absolute; top: -8px; right: 10px; background: var(--primary); color: #fff;
   font-size: 11px; padding: 1px 8px; border-radius: 999px;
 }
 .badge.empty { background: var(--warn); }
+
+/* —— 日卡里的分组行 —— */
+.day { min-height: 116px; }
+.g-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 14px; }
+.g-row + .g-row { border-top: 1px dashed var(--line); }
+.g-tag {
+  font-size: 11px; line-height: 1.7; padding: 0 7px; border-radius: 999px;
+  flex: none; background: #eef1f6; color: var(--muted);
+}
+.g-tag.gtag-0 { background: #e4ecff; color: var(--primary); }
+.g-tag.gtag-1 { background: #e2f5ea; color: var(--ok); }
+.g-name { flex: 1; font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-meta { font-size: 12px; color: var(--muted); flex: none; }
+.g-row.is-mine { background: var(--primary-soft); border-radius: 8px; padding: 4px 6px; margin: 0 -6px; }
+.g-row.is-mine .g-name { color: var(--primary); }
+.g-row.is-empty .g-name { color: #b6bec9; font-size: 13px; font-weight: 500; }
 
 /* —— 状态条 —— */
 .sendbar { margin-top: 14px; font-size: 13px; color: var(--muted); }
@@ -158,6 +173,24 @@ tr:last-child td { border-bottom: none; }
 .status-pill.pending { background: #fef3c7; color: var(--warn); }
 .status-pill.applied { background: #dcfce7; color: var(--ok); }
 .status-pill.ignored { background: #e5e7eb; color: var(--muted); }
+.status-pill.group { background: #eef1f6; color: var(--muted); }
+.listhead { margin: 18px 0 8px; font-size: 15px; }
+textarea.mono { font-family: Consolas, "Courier New", monospace; font-size: 13px; line-height: 1.55; }
+
+/* —— 弹窗内按组编辑 —— */
+.grp-edit { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
+.grp-edit > label { margin-top: 0; }
+.grp-inline { display: flex; gap: 10px; }
+.grp-inline > div { flex: 1; min-width: 0; }
+.grp-inline label { margin: 8px 0 4px; }
+
+/* —— 成员管理 —— */
+.member-group { margin-top: 12px; }
+.member-group h4 { margin: 0 0 2px; font-size: 14px; }
+.member-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
+.member-row .name { flex: 1; font-weight: 600; }
+button.btn-sm { width: auto; padding: 5px 12px; font-size: 13px; border-radius: 8px; flex: none; }
+button.softdanger { background: #fff; border-color: #f3c6c6; color: var(--danger); }
 
 /* —— Toast —— */
 #toastRoot { position: fixed; left: 0; right: 0; bottom: 24px; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 200; pointer-events: none; }

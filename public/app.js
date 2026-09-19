@@ -32,7 +32,8 @@ const state = {
   data: null,        // 当前周排班响应
   config: null,
   members: null,     // /api/members 响应（管理员）
-  promptMd: '',
+  promptMd: {},      // { g1: md, g2: md }
+  promptGroup: 'g1',
   stats: null,
   statsMode: 'all',
   suggestions: null,
@@ -204,6 +205,10 @@ function groupName(id) {
   const g = state.data.groups.find((x) => x.id === id);
   return g ? g.name : '';
 }
+function dayPeople(day, gid) {
+  const slot = day && day.groups ? day.groups[gid] : null;
+  return (slot && slot.people) || [];
+}
 
 /* ================= 排班 ================= */
 async function loadSchedule() {
@@ -215,19 +220,21 @@ async function loadSchedule() {
   const cards = d.days.map((day) => {
     const today = day.date === d.today;
     const myP = myPerson();
-    const mine = myP && day.groups[myP.groupId] && day.groups[myP.groupId].personId === state.me.userId;
+    const myList = myP ? dayPeople(day, myP.groupId) : [];
+    const mine = myP && myList.some((p) => p.personId === state.me.userId);
     const cls = ['day', today && 'is-today', mine && 'is-mine'].filter(Boolean).join(' ');
     const rows = d.groups.map((g, gi) => {
-      const e = day.groups[g.id];
-      const rowMine = myP && g.id === myP.groupId && e && e.personId === state.me.userId;
-      const title = e
-        ? `${g.name}：${e.name}（${e.hours}h${e.note ? '，' + e.note : ''}）`
+      const people = dayPeople(day, g.id);
+      const rowMine = myP && g.id === myP.groupId && people.some((x) => x.personId === state.me.userId);
+      const title = people.length
+        ? `${g.name}：${people.map((p) => `${p.name}（${p.hours}h${p.note ? '，' + p.note : ''}）`).join('、')}`
         : `${g.name}：空缺，待认领`;
+      const meta = people.length > 1 ? `${people.length}人` : (people.length === 1 ? `${people[0].hours}h` : '');
       return `
-        <div class="g-row ${rowMine ? 'is-mine' : ''} ${!e ? 'is-empty' : ''}" title="${esc(title)}">
+        <div class="g-row ${rowMine ? 'is-mine' : ''} ${!people.length ? 'is-empty' : ''}" title="${esc(title)}">
           <span class="g-tag gtag-${gi % 2}">${esc(g.name)}</span>
-          <span class="g-name">${e ? esc(e.name) : '待认领'}</span>
-          <span class="g-meta">${e ? e.hours + 'h' : ''}</span>
+          <span class="g-name">${people.length ? people.map((p) => esc(p.name)).join('、') : '待认领'}</span>
+          <span class="g-meta">${meta}</span>
         </div>`;
     }).join('');
     return `
@@ -244,7 +251,7 @@ async function loadSchedule() {
     <div class="weeknav">
       <button id="wPrev">◀ 上周</button>
       <div class="weektitle">${fmtShort(d.weekStart)} – ${fmtShort(addDays(d.weekStart, 6))}
-        <small>${d.isoWeek.year}年第${d.isoWeek.week}周${d.weekStart === curWs ? ' · 本周' : ''}${ungen.length ? ' · 未生成：' + ungen.map((g) => esc(g.name)).join('、') : ''}</small>
+        <small>${d.isoWeek.year}年第${d.isoWeek.week}周${d.weekStart === curWs ? ' · 本周' : ''}${ungen.length ? ' · 未生成：' + ungen.map((g) => esc(g.name)).join('、') : ''}${d.config.saturdayDouble ? ' · 周六双倍' : ''}</small>
       </div>
       <button id="wNext">下周 ▶</button>
       <button id="wToday" class="ghost">回到本周</button>
@@ -252,8 +259,8 @@ async function loadSchedule() {
     <div class="daygrid">${cards}</div>
     <div class="sendbar">${sendBarHtml(d)}</div>
     ${isAdmin
-      ? '<p class="hint">管理员提示：点击日期可按组指派/清空/备注/重新生成；两组互不影响，各排各的。</p>'
-      : '<p class="hint">提示：每天两组各有一班。点击日期可处理<b>自己组</b>的班：换班/弃班/认领空缺。</p>'}`;
+      ? '<p class="hint">管理员提示：点击日期可按组编辑当天出勤名单（可多人）；两组互不影响，各排各的。</p>'
+      : '<p class="hint">提示：每天两组各有 0~N 人出勤。点击日期可处理<b>自己组</b>的班：换班 / 弃班 / 认领加入。</p>'}`;
 
   $('#wPrev').onclick = () => { state.weekStart = addDays(state.weekStart, -7); loadSchedule(); };
   $('#wNext').onclick = () => { state.weekStart = addDays(state.weekStart, 7); loadSchedule(); };
@@ -271,9 +278,9 @@ function sendBarHtml(d) {
 
 function dayInfoHtml(day) {
   const parts = (state.data.groups || []).map((g) => {
-    const e = day.groups[g.id];
-    return `${esc(g.name)}：${e
-      ? `<b>${esc(e.name)}</b>（${e.hours}h${e.note ? '，' + esc(e.note) : ''}）`
+    const people = dayPeople(day, g.id);
+    return `${esc(g.name)}：${people.length
+      ? people.map((p) => `<b>${esc(p.name)}</b>（${p.hours}h${p.note ? '，' + esc(p.note) : ''}）`).join('、')
       : '空缺'}`;
   }).join(' · ');
   return `<div class="dayinfo"><b>${day.weekday} ${day.date}</b><br>${parts}</div>`;
@@ -288,14 +295,15 @@ function openDayModal(date) {
   if (isAdmin) return openAdminDayModal(day, info);
 
   const myP = myPerson();
-  const myG = myP ? day.groups[myP.groupId] : null;
-  const gName = myP ? groupName(myP.groupId) : '';
-  const mine = myG && myG.personId === state.me.userId;
+  if (!myP) return showModal(day.date + ' · 排班详情', info + '<p class="hint">账号信息异常，请联系管理员。</p>');
+  const gName = groupName(myP.groupId);
+  const myList = dayPeople(day, myP.groupId);
+  const mine = myList.some((p) => p.personId === state.me.userId);
 
   let body;
-  if (myP && mine) {
+  if (mine) {
     body = `${info}
-      <p class="hint">这是你在「${esc(gName)}」的班。</p>
+      <p class="hint">你在 ${date}「${esc(gName)}」的出勤名单中。</p>
       <div class="rowbtns">
         <button id="aSwap" class="primary">🔄 和别人换班</button>
         <button id="aRelease" class="danger">🚫 弃班（留空待认领）</button>
@@ -303,41 +311,35 @@ function openDayModal(date) {
     showModal(day.date + ' · 我的班', body);
     $('#aSwap').onclick = () => openSwapPicker(date);
     $('#aRelease').onclick = async () => {
-      if (await confirmModal(`确认放弃 <b>${day.weekday} ${day.date}</b>（${esc(gName)}）的班？<br>放弃后该组该天空缺，其他人可认领。`)) {
+      if (await confirmModal(`确认放弃 <b>${day.weekday} ${day.date}</b>（${esc(gName)}）的班？<br>放弃后你不在当天名单中，空位待认领。`)) {
         afterMutation(await api('/api/release', { method: 'POST', body: { date } }));
         loadSchedule();
       }
     };
-  } else if (myP && myG) {
+  } else {
     body = `${info}
+      <p class="hint">你不在 ${date}「${esc(gName)}」的出勤名单中。</p>
       <div class="rowbtns">
-        <button id="aSwap" class="primary">🔄 和 ${esc(gName)}的${esc(myG.name)}换班</button>
+        <button id="aClaim" class="primary">✋ 认领加入（${esc(gName)}）</button>
+        ${myList.length ? '<button id="aSwap" class="ghost">🔄 和本组某人换班</button>' : ''}
       </div>`;
     showModal(day.date + ' · 排班详情', body);
-    $('#aSwap').onclick = () => openSwapPicker(date);
-  } else if (myP) {
-    body = `${info}
-      <p class="hint">你的组（${esc(gName)}）该天空缺。</p>
-      <div class="rowbtns">
-        <button id="aClaim" class="primary">✋ 认领这个班（${esc(gName)}）</button>
-      </div>`;
-    showModal(day.date + ' · 空缺', body);
     $('#aClaim').onclick = async () => {
       afterMutation(await api('/api/claim', { method: 'POST', body: { date } }));
       loadSchedule();
     };
-  } else {
-    showModal(day.date + ' · 排班详情', info + '<p class="hint">账号信息异常，请联系管理员。</p>');
+    if (myList.length) $('#aSwap').onclick = () => openSwapPicker(date);
   }
 }
 
+/* 换班两步：先选我让出的日期，再选对方（目标日当天我组里的人） */
 async function openSwapPicker(targetDate) {
   let days;
   try { days = (await api('/api/my-days')).days; } catch (e) { return toast(e.message, 'error'); }
   const opts = days.filter((x) => x.date !== targetDate);
   if (!opts.length) return toast('你没有其他班可以换', 'warn');
-  showModal('选择我要换出的日期', `
-    <p class="hint">用我的哪个班，和 <b>${targetDate}</b> 的班交换？（只能和本组成员的班互换）</p>
+  showModal('换班 · 第 1 步：选择我让出的日期', `
+    <p class="hint">用我的哪个班，去换 <b>${targetDate}</b> 上别人的班？（只能和本组成员互换）</p>
     <div class="picklist">
       ${opts.map((o) => `
         <button data-date="${o.date}">
@@ -346,11 +348,35 @@ async function openSwapPicker(targetDate) {
         </button>`).join('')}
     </div>`);
   $$('.picklist button').forEach((b) => {
+    b.onclick = () => openSwapTarget(targetDate, b.dataset.date);
+  });
+}
+
+function openSwapTarget(targetDate, fromDate) {
+  const day = state.data.days.find((x) => x.date === targetDate);
+  const myP = myPerson();
+  const cands = myP ? dayPeople(day, myP.groupId).filter((p) => p.personId !== state.me.userId) : [];
+  if (!cands.length) {
+    closeModal();
+    return toast(`${targetDate} 你的组里没有可交换的人`, 'warn');
+  }
+  showModal('换班 · 第 2 步：选择交换对象', `
+    <p class="hint">用 <b>${fromDate}</b> 的班，和 <b>${targetDate}</b> 上的谁交换？</p>
+    <div class="picklist">
+      ${cands.map((p) => `
+        <button data-pid="${p.personId}">
+          <span>${esc(p.name)}</span>
+          <span class="r">${p.hours}h</span>
+        </button>`).join('')}
+    </div>`);
+  $$('.picklist button').forEach((b) => {
     b.onclick = async () => {
-      const fromDate = b.dataset.date;
-      if (await confirmModal(`确认交换？<br><b>${fromDate}</b> ⇄ <b>${targetDate}</b><br>交换后飞书会自动重发新排班。`)) {
+      const pid = b.dataset.pid;
+      const name = (cands.find((x) => x.personId === pid) || {}).name || '';
+      if (await confirmModal(`确认交换？<br><b>${fromDate}</b>（你的班）⇄ <b>${targetDate}</b>（${esc(name)} 的班）<br>交换后飞书会自动重发新排班。`)) {
         try {
-          afterMutation(await api('/api/swap', { method: 'POST', body: { fromDate, toDate: targetDate } }));
+          afterMutation(await api('/api/swap', { method: 'POST', body: { fromDate, toDate: targetDate, withPersonId: pid } }));
+          closeModal();
           loadSchedule();
         } catch (e) { toast(e.message, 'error'); }
       }
@@ -358,25 +384,42 @@ async function openSwapPicker(targetDate) {
   });
 }
 
+/* 管理员：按组编辑当天出勤名单（动态行） */
+function slotRowHtml(g, entry) {
+  const members = state.data.people.filter((p) => p.groupId === g.id);
+  const opts = ['<option value="">— 选择人员 —</option>']
+    .concat(members.map((p) => `<option value="${p.id}" ${entry && entry.personId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`))
+    .join('');
+  return `
+    <div class="slot-row">
+      <select class="sr-person">${opts}</select>
+      <input class="sr-hours" type="number" step="0.5" min="0.5" max="24" placeholder="工时" value="${entry && entry.rawHours != null ? entry.rawHours : ''}" title="留空 = 默认 ${state.data.config.shiftHours}h${state.data.config.saturdayDouble ? '（周六自动双倍计入）' : ''}">
+      <input class="sr-note" maxlength="100" placeholder="备注" value="${entry ? esc(entry.note) : ''}">
+      <button class="sr-del btn-sm softdanger">删</button>
+    </div>`;
+}
+
+function bindSlotRows(gid) {
+  const box = $('#rows_' + gid);
+  $$('.sr-del', box).forEach((b) => {
+    b.onclick = () => b.closest('.slot-row').remove();
+  });
+}
+
 function openAdminDayModal(day, info) {
   const groups = state.data.groups || [];
   const blocks = groups.map((g) => {
-    const e = day.groups[g.id];
-    const members = state.data.people.filter((p) => p.groupId === g.id);
-    const opts = ['<option value="">— 空缺 —</option>']
-      .concat(members.map((p) => `<option value="${p.id}" ${e && e.personId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`))
-      .join('');
+    const people = dayPeople(day, g.id);
     return `
       <div class="grp-edit">
-        <label><b>${esc(g.name)}</b>（${members.length} 人）· 指派人员</label>
-        <select id="mPerson_${g.id}">${opts}</select>
-        <div class="grp-inline">
-          <div><label>工时（空 = 默认 ${state.data.config.shiftHours}h）</label>
-            <input id="mHours_${g.id}" type="number" step="0.5" min="0.5" max="24" value="${e ? e.hours : ''}"></div>
-          <div><label>备注（可选）</label>
-            <input id="mNote_${g.id}" maxlength="100" value="${e ? esc(e.note) : ''}"></div>
+        <label><b>${esc(g.name)}</b> · 当天出勤名单（${people.length} 人，可增减）</label>
+        <div class="slot-rows" id="rows_${g.id}">
+          ${people.map((p) => slotRowHtml(g, p)).join('')}
         </div>
-        <button id="mSave_${g.id}" class="primary" style="margin-top:10px">保存「${esc(g.name)}」</button>
+        <div class="grp-tools">
+          <button class="ghost btn-sm row-add" data-g="${g.id}">➕ 加一人</button>
+          <button class="primary btn-sm grp-save" data-g="${g.id}">保存「${esc(g.name)}」</button>
+        </div>
       </div>`;
   }).join('');
 
@@ -384,39 +427,41 @@ function openAdminDayModal(day, info) {
     ${info}
     ${blocks}
     <div class="rowbtns">
-      <button id="mClearAll" class="ghost">清空整天（两组）</button>
       ${groups.map((g) => `<button class="ghost mRegen" data-gid="${g.id}">按轮换重排本周·${esc(g.name)}</button>`).join('')}
     </div>`);
 
-  groups.forEach((g) => {
-    $('#mSave_' + g.id).onclick = async () => {
-      try {
-        const r = await api('/api/set', {
-          method: 'POST',
-          body: {
-            date: day.date,
-            groupId: g.id,
-            personId: $('#mPerson_' + g.id).value || null,
-            hours: $('#mHours_' + g.id).value || undefined,
-            note: $('#mNote_' + g.id).value.trim(),
-          },
+  groups.forEach((g) => bindSlotRows(g.id));
+
+  $$('.row-add').forEach((b) => {
+    b.onclick = () => {
+      const gid = b.dataset.g;
+      const g = groups.find((x) => x.id === gid);
+      $('#rows_' + gid).insertAdjacentHTML('beforeend', slotRowHtml(g, null));
+      bindSlotRows(gid);
+    };
+  });
+
+  $$('.grp-save').forEach((b) => {
+    b.onclick = async () => {
+      const gid = b.dataset.g;
+      const rows = $$('.slot-row', $('#rows_' + gid));
+      const entries = [];
+      for (const row of rows) {
+        const personId = $('.sr-person', row).value;
+        if (!personId) continue;
+        entries.push({
+          personId,
+          hours: $('.sr-hours', row).value || undefined,
+          note: $('.sr-note', row).value.trim(),
         });
+      }
+      try {
+        const r = await api('/api/set', { method: 'POST', body: { date: day.date, groupId: gid, entries } });
         afterMutation(r);
         loadSchedule();
       } catch (e) { toast(e.message, 'error'); }
     };
   });
-
-  $('#mClearAll').onclick = async () => {
-    let last;
-    try {
-      for (const g of groups) {
-        last = await api('/api/set', { method: 'POST', body: { date: day.date, groupId: g.id, personId: null } });
-      }
-      afterMutation(last);
-      loadSchedule();
-    } catch (e) { toast(e.message, 'error'); }
-  };
 
   $$('.mRegen').forEach((b) => {
     b.onclick = async () => {
@@ -462,7 +507,7 @@ function renderStats() {
     return `
       <div class="card">
         <h3>${esc(g.name)}（${g.members.length} 人）</h3>
-        <p class="hint">覆盖 ${weeksLabel} 周 · 每班默认 ${s.shiftHours}h（个别班次可按天覆盖工时）</p>
+        <p class="hint">覆盖 ${weeksLabel} 周 · 每班默认 ${s.shiftHours}h${s.saturdayDouble ? ' · 周六按双倍工时计入' : ''}（个别班次可按天覆盖工时）</p>
         <table>
           <thead><tr><th>姓名</th><th>班次</th><th>工时</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
           <tbody>
@@ -512,7 +557,8 @@ async function loadAi() {
   ]);
   state.suggestions = r.suggestions;
   state.config = c;
-  state.promptMd = p.md;
+  state.promptMd = p.files || {};
+  if (!state.promptMd[state.promptGroup] && state.promptMd.g1 !== undefined) state.promptGroup = 'g1';
   state.members = m;
   renderAi();
 }
@@ -524,27 +570,39 @@ function renderAi() {
   const modeLine = state.config && state.config.aiApplyMode === 'auto'
     ? '当前模式：<b style="color:var(--ok)">自动应用</b>（建议生成后直接生效并重发飞书）'
     : '当前模式：<b>通知确认</b>（建议生成后需在此确认应用）';
+  const pg = state.promptGroup || 'g1';
+  const pgName = (groups.find((g) => g.id === pg) || {}).name || pg;
+  const md = state.promptMd[pg] || '';
+  const promptHintHtml = (gid) => {
+    const gName = (groups.find((g) => g.id === gid) || {}).name || gid;
+    const file = gid === 'g1' ? 'prompt_md/prompt.md' : 'prompt_md/prompt_b.md';
+    const has = (state.promptMd[gid] || '').trim().length > 0;
+    return `当前编辑：<b>${esc(gName)}</b>规则，文件 <code>${file}</code>${has ? '' : '（尚未编写）'}。
+        AI 生成该组排班时以本规则为准；「补充要求」输入框里的临时指令优先级更高。每天出勤人数、硬性约束、公平口径都写在这里。`;
+  };
 
   $('#view').innerHTML = `
     <div class="card">
-      <h3>📋 排班规则（Markdown）</h3>
-      <p class="hint">保存在服务器 <code>prompt_md/prompt.md</code>，下方显示当前内容，可直接编辑保存。AI 生成排班时以本规则为准；
-        若下方「补充要求」输入框里写了内容，则其优先级更高（用于临时微调，不必改这里的规则）。没有规则文件时，直接在这里写规则并保存即可。</p>
-      <textarea id="aiPromptMd" class="mono" rows="12" spellcheck="false"
-        placeholder="（暂无规则文件。可直接在此输入排班规则并点保存，例如：&#10;每天安排一人；每人班次尽量均衡；张三周末不值班…）">${esc(state.promptMd || '')}</textarea>
+      <h3>📋 排班规则（Markdown · 按组）</h3>
+      <div class="seg" id="promptSeg">
+        ${groups.map((g) => `<button class="${pg === g.id ? 'active' : ''}" data-g="${g.id}">${esc(g.name)}规则</button>`).join('')}
+      </div>
+      <p class="hint" id="promptHint">${promptHintHtml(pg)}</p>
+      <textarea id="aiPromptMd" class="mono" rows="14" spellcheck="false"
+        placeholder="（该组还没有规则文件。可直接在此输入规则并点保存，例如：&#10;# 每天出勤人数&#10;周一：2人 …&#10;# 硬性约束&#10;…）">${esc(md)}</textarea>
       <div class="rowbtns">
-        <button id="btnSavePrompt" class="primary">保存规则</button>
+        <button id="btnSavePrompt" class="primary">保存「${esc(pgName)}」规则</button>
         <span class="inline-note" id="promptState"></span>
       </div>
     </div>
 
     <div class="card">
       <h3>🪄 AI 生成排班</h3>
-      <p class="hint">按上方规则让大模型为指定分组生成一段时间的排班；生成结果以「建议」形式展示（下方列表），确认应用后飞书自动重发。${modeLine}</p>
+      <p class="hint">按上方「该组的规则」让大模型生成一段时间的排班（每天可以是 0~N 人）；结果以「建议」展示（逐日名单对比），确认应用后飞书自动重发。${modeLine}</p>
       <div class="form-grid">
         <div>
           <label>分组</label>
-          <select id="genGroup">${groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select>
+          <select id="genGroup">${groups.map((g) => `<option value="${g.id}" ${g.id === pg ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>
         </div>
         <div>
           <label>开始日期（自动归到周一）</label>
@@ -572,8 +630,8 @@ function renderAi() {
     </div>
 
     <div class="card">
-      <h3>⚡ 夜间检查（原有功能，逐组独立）</h3>
-      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动逐组检查未来 ${state.config ? state.config.aiCheckDays : 14} 天排班：出现<b>空班</b>或<b>班次不均</b>时，由 DeepSeek 分析并给出最小改动建议。${modeLine}</p>
+      <h3>⚡ 夜间检查（逐组独立，会带上该组规则）</h3>
+      <p class="hint">每晚 ${state.config ? state.config.aiCheckHour : '21'}:00 自动逐组检查未来 ${state.config ? state.config.aiCheckDays : 14} 天排班：出现<b>无人排班/班次不均/与规则不符</b>时，由 DeepSeek 按该组规则给出最小改动建议。${modeLine}</p>
       <button id="btnAiCheck" class="primary">⚡ 立即运行 AI 检查</button>
       <span class="inline-note" id="aiCheckHint"></span>
     </div>
@@ -581,12 +639,25 @@ function renderAi() {
     <h3 class="listhead">建议列表</h3>
     ${sug.length ? sug.map(renderSug).join('') : '<div class="card"><p class="hint">暂无 AI 建议。排班均衡时夜检只记日志，不打扰。</p></div>'}`;
 
+  $$('#promptSeg button').forEach((b) => {
+    b.onclick = () => {
+      state.promptGroup = b.dataset.g;
+      const gName = (groups.find((x) => x.id === state.promptGroup) || {}).name || '';
+      $('#aiPromptMd').value = state.promptMd[state.promptGroup] || '';
+      $$('#promptSeg button').forEach((x) => x.classList.toggle('active', x.dataset.g === state.promptGroup));
+      $('#btnSavePrompt').textContent = `保存「${gName}」规则`;
+      $('#promptHint').innerHTML = promptHintHtml(state.promptGroup);
+      $('#promptState').textContent = '';
+      $('#genGroup').value = state.promptGroup; // 顺手把生成目标切到同一组
+    };
+  });
+
   $('#btnSavePrompt').onclick = async () => {
     try {
-      await api('/api/ai/prompt', { method: 'POST', body: { md: $('#aiPromptMd').value } });
-      state.promptMd = $('#aiPromptMd').value;
-      toast('排班规则已保存到 prompt_md/prompt.md ✅', 'ok');
-      $('#promptState').textContent = `已保存（${state.promptMd.length} 字）`;
+      await api('/api/ai/prompt', { method: 'POST', body: { group: state.promptGroup, md: $('#aiPromptMd').value } });
+      state.promptMd[state.promptGroup] = $('#aiPromptMd').value;
+      toast(`${pgName}规则已保存 ✅`, 'ok');
+      $('#promptState').textContent = `已保存（${$('#aiPromptMd').value.length} 字）`;
     } catch (e) { toast(e.message, 'error'); }
   };
 
@@ -671,7 +742,7 @@ function renderSug(s) {
       <p class="hint">${esc(s.time)} · 触发：${esc(s.trigger)}</p>
       <p><b>原因：</b>${esc(s.reason)}</p>
       <div class="sug-changes">
-        ${s.changes.map((c) => `<div>${WEEKDAY[dowIdx(c.date)]} ${esc(c.date)}：${c.fromName ? esc(c.fromName) : '空缺'} → <b>${c.toName ? esc(c.toName) : '清空'}</b></div>`).join('')}
+        ${s.changes.map((c) => `<div>${WEEKDAY[dowIdx(c.date)]} ${esc(c.date)}：${c.fromNames && c.fromNames.length ? c.fromNames.map(esc).join('、') : '空缺'} → <b>${c.toNames && c.toNames.length ? c.toNames.map(esc).join('、') : '清空'}</b></div>`).join('')}
       </div>
       ${s.explanation ? `<p class="hint">${esc(s.explanation)}</p>` : ''}
       ${s.status === 'pending' ? `
@@ -759,6 +830,13 @@ async function loadSettings() {
           <input id="cfgShiftHours" type="number" step="0.5" min="0.5" max="24" value="${num(c.shiftHours)}">
         </div>
         <div>
+          <label>周六工时口径</label>
+          <select id="cfgSatDouble">
+            <option value="1" ${c.saturdayDouble ? 'selected' : ''}>双倍计入（统计与 AI 公平口径）</option>
+            <option value="0" ${!c.saturdayDouble ? 'selected' : ''}>按普通工时计入</option>
+          </select>
+        </div>
+        <div>
           <label>修改后重发防抖（毫秒）</label>
           <input id="cfgResendDelay" type="number" min="0" max="60000" step="500" value="${num(c.resendDelayMs)}">
         </div>
@@ -820,8 +898,9 @@ async function loadSettings() {
 
     <div class="card">
       <h3>📥 批量导入排班</h3>
-      <p class="hint">每行一条：<code>日期 姓名</code>（空格/逗号分隔），排到该成员所在组；姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
-      <textarea id="impText" rows="6" placeholder="2026-09-21 张三&#10;2026-09-22 李四"></textarea>
+      <p class="hint">每行：<code>日期 姓名1 姓名2 …</code>（逗号/空格分隔，一天可多人，自动落到各成员所在组）；
+        姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
+      <textarea id="impText" rows="6" placeholder="2026-09-21 张三,李四&#10;2026-09-22 王五 赵六"></textarea>
       <div class="rowbtns"><button id="btnImport" class="primary">导入</button></div>
       <div id="impResult" class="inline-note"></div>
     </div>
@@ -843,6 +922,7 @@ async function loadSettings() {
       shiftStart: $('#cfgShiftStart').value || '09:00',
       shiftEnd: $('#cfgShiftEnd').value || '18:00',
       shiftHours: Number($('#cfgShiftHours').value),
+      saturdayDouble: $('#cfgSatDouble').value === '1',
       resendDelayMs: Number($('#cfgResendDelay').value),
       timezone: $('#cfgTimezone').value.trim() || 'Asia/Shanghai',
       aiModel: $('#cfgAiModel').value.trim() || 'deepseek-chat',

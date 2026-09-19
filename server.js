@@ -42,7 +42,7 @@ function weekOrCurrent(req) {
   return sch.weekStartOf(sch.todayStr(cfg().timezone));
 }
 
-// 自动生成：本周起 4 周，逐组只填空缺；已人工弃班/导入的不会被动
+// 自动生成：本周起 4 周，逐组只填整天空缺；已人工弃班/导入的不会被动
 function ensureHorizon() {
   const db = store.data;
   const cur = sch.weekStartOf(sch.todayStr(db.config.timezone));
@@ -67,11 +67,19 @@ function viewWeek(db, ws) {
     const dayEntry = db.schedule[date] || {};
     const groups = {};
     for (const g of db.groups) {
-      const e = dayEntry[g.id];
-      const p = e && e.personId ? db.people.find((x) => x.id === e.personId) : null;
-      groups[g.id] = p
-        ? { personId: p.id, name: p.name, hours: sch.entryHours(db, e), note: (e && e.note) || '' }
-        : null;
+      groups[g.id] = {
+        people: sch.slotOf(db, date, g.id).map((e) => {
+          const p = e && e.personId ? db.people.find((x) => x.id === e.personId) : null;
+          return p
+            ? {
+                personId: p.id, name: p.name,
+                hours: sch.entryHours(db, e, date),       // 展示口径（周六双倍已计入）
+                rawHours: e && e.hours != null ? e.hours : null, // 原始存储值（编辑用）
+                note: (e && e.note) || '',
+              }
+            : null;
+        }).filter(Boolean),
+      };
     }
     days.push({ date, weekday: sch.WEEKDAY_CN[i], groups });
   }
@@ -160,6 +168,7 @@ app.get('/api/schedule', auth.requireAuth, (req, res) => {
       shiftStart: db.config.shiftStart,
       shiftEnd: db.config.shiftEnd,
       shiftHours: db.config.shiftHours,
+      saturdayDouble: !!db.config.saturdayDouble,
       publicUrl: db.config.publicUrl,
     },
     me: req.auth,
@@ -175,10 +184,11 @@ app.get('/api/my-days', auth.requireAuth, (req, res) => {
   for (const [date, day] of Object.entries(db.schedule).sort()) {
     if (!day) continue;
     for (const g of db.groups) {
-      const e = day[g.id];
-      if (!e || !e.personId) continue;
-      if (mine && e.personId !== mine) continue;
-      out.push({ date, groupId: g.id, name: nameOf(e.personId), hours: sch.entryHours(db, e) });
+      for (const e of sch.slotOf(db, date, g.id)) {
+        if (!e || !e.personId) continue;
+        if (mine && e.personId !== mine) continue;
+        out.push({ date, groupId: g.id, name: nameOf(e.personId), hours: sch.entryHours(db, e, date) });
+      }
     }
   }
   res.json({ days: out });
@@ -186,25 +196,28 @@ app.get('/api/my-days', auth.requireAuth, (req, res) => {
 
 // —— 排班变更（普通成员：换班 / 认领 / 弃班，均只作用于本人所在组）——
 app.post('/api/swap', auth.requireAuth, ah(async (req, res) => {
-  const { fromDate, toDate, groupId } = req.body || {};
+  const { fromDate, toDate, withPersonId } = req.body || {};
   if (!sch.isDateStr(fromDate) || !sch.isDateStr(toDate) || fromDate === toDate) {
     return res.status(400).json({ error: '日期参数不正确' });
   }
+  if (req.auth.role !== 'user') return res.status(403).json({ error: '管理员请通过「指派」调整' });
   const db = store.data;
-  const gid = req.auth.role === 'admin' ? String(groupId || '') : (store.personById(req.auth.userId) || {}).groupId;
-  if (!sch.groupById(db, gid)) return res.status(400).json({ error: '分组不正确' });
-  const a = sch.slotOf(db, fromDate, gid);
-  const b = sch.slotOf(db, toDate, gid);
-  if (!a || !b) {
-    return res.status(400).json({ error: `两个日期在「${gname(gid)}」都需要已有人排班才能互换` });
-  }
-  if (req.auth.role !== 'admin' && a.personId !== req.auth.userId) {
-    return res.status(403).json({ error: '只能换自己的班，请先选择自己的日期' });
-  }
-  sch.setSlot(db, fromDate, gid, { ...b });
-  sch.setSlot(db, toDate, gid, { ...a });
+  const me = store.personById(req.auth.userId);
+  if (!me) return res.status(403).json({ error: '账号不存在' });
+  const gid = me.groupId;
+  const fromList = sch.slotOf(db, fromDate, gid);
+  const toList = sch.slotOf(db, toDate, gid);
+  const myEntry = fromList.find((e) => e.personId === me.id);
+  if (!myEntry) return res.status(403).json({ error: '起始日期不是你的班，请先选择自己的日期' });
+  const target = withPersonId
+    ? toList.find((e) => e.personId === withPersonId)
+    : toList.find((e) => e.personId !== me.id);
+  if (!target) return res.status(400).json({ error: `目标日期「${gname(gid)}」没有可交换的人` });
+  const targetEntry = { ...target };
+  sch.setSlot(db, fromDate, gid, fromList.map((e) => (e.personId === me.id ? targetEntry : e)));
+  sch.setSlot(db, toDate, gid, toList.map((e) => (e.personId === target.personId ? { ...myEntry } : e)));
   store.addLog(req.auth.name, req.auth.role, '换班',
-    `${gname(gid)}：${nameOf(b.personId) || '?'}（${fromDate}）与 ${nameOf(a.personId) || '?'}（${toDate}）互换`);
+    `${gname(gid)}：${me.name}（${fromDate}）与 ${nameOf(target.personId) || '?'}（${toDate}）互换`);
   store.save();
   queueResendsFor([fromDate, toDate], `${req.auth.name}换班后自动重发`);
   res.json({ ok: true, ...sendStatus(db) });
@@ -217,11 +230,12 @@ app.post('/api/claim', auth.requireAuth, (req, res) => {
   const db = store.data;
   const me = store.personById(req.auth.userId);
   if (!me) return res.status(403).json({ error: '账号不存在' });
-  if (sch.slotOf(db, date, me.groupId)) {
-    return res.status(400).json({ error: `该天「${gname(me.groupId)}」已有人排班，不能认领` });
+  const list = sch.slotOf(db, date, me.groupId);
+  if (list.some((e) => e.personId === me.id)) {
+    return res.status(400).json({ error: `你已在 ${date}「${gname(me.groupId)}」的名单中` });
   }
-  sch.setSlot(db, date, me.groupId, { personId: me.id });
-  store.addLog(req.auth.name, req.auth.role, '认领空班', `认领 ${date}「${gname(me.groupId)}」的空缺班次`);
+  sch.setSlot(db, date, me.groupId, [...list, { personId: me.id }]);
+  store.addLog(req.auth.name, req.auth.role, '认领空班', `认领 ${date}「${gname(me.groupId)}」的班次`);
   store.save();
   queueResendsFor([date], `${req.auth.name}认领空班后自动重发`);
   res.json({ ok: true, ...sendStatus(db) });
@@ -232,41 +246,50 @@ app.post('/api/release', auth.requireAuth, (req, res) => {
   if (!sch.isDateStr(date)) return res.status(400).json({ error: '日期不正确' });
   const db = store.data;
   const me = req.auth.role === 'user' ? store.personById(req.auth.userId) : null;
-  if (!me) return res.status(403).json({ error: '管理员请使用指派功能清空班次' });
-  const e = sch.slotOf(db, date, me.groupId);
-  if (!e) return res.status(400).json({ error: `该天「${gname(me.groupId)}」没有排班` });
-  if (e.personId !== me.id) return res.status(403).json({ error: '只能放弃自己的班' });
-  sch.setSlot(db, date, me.groupId, null);
-  store.addLog(req.auth.name, req.auth.role, '弃班', `放弃 ${date}「${gname(me.groupId)}」的班次，该天空缺待认领`);
+  if (!me) return res.status(403).json({ error: '管理员请通过指派功能清空班次' });
+  const list = sch.slotOf(db, date, me.groupId);
+  if (!list.some((e) => e.personId === me.id)) {
+    return res.status(400).json({ error: `该天「${gname(me.groupId)}」没有你的班` });
+  }
+  sch.setSlot(db, date, me.groupId, list.filter((e) => e.personId !== me.id));
+  store.addLog(req.auth.name, req.auth.role, '弃班', `放弃 ${date}「${gname(me.groupId)}」的班次，留空待认领`);
   store.save();
   queueResendsFor([date], `${req.auth.name}弃班后自动重发`);
   res.json({ ok: true, ...sendStatus(db) });
 });
 
-// —— 管理员：按组指派 / 重新生成 / 批量导入 / 清空 ——
+// —— 管理员：按组指派（整天名单）/ 重新生成 / 批量导入 / 清空 ——
 app.post('/api/set', auth.requireAdmin, (req, res) => {
-  const { date, groupId, personId, hours, note } = req.body || {};
+  const { date, groupId, entries } = req.body || {};
   if (!sch.isDateStr(date)) return res.status(400).json({ error: '日期不正确' });
   const db = store.data;
   if (!sch.groupById(db, groupId)) return res.status(400).json({ error: '分组不正确' });
-  if (personId === null || personId === '' || personId === undefined) {
-    sch.setSlot(db, date, groupId, null);
-    store.addLog(req.auth.name, 'admin', '修改排班', `${gname(groupId)} ${date} 清空`);
-  } else {
-    const p = store.personById(personId);
-    if (!p) return res.status(400).json({ error: '人员不存在' });
-    if (p.groupId !== groupId) return res.status(400).json({ error: `${p.name} 不在「${gname(groupId)}」中` });
-    const entry = { personId };
-    if (hours !== undefined && hours !== null && hours !== '') {
-      const h = Number(hours);
-      if (!Number.isFinite(h) || h <= 0 || h > 24) return res.status(400).json({ error: '工时需在 0-24 之间' });
-      entry.hours = h;
+
+  const list = [];
+  if (Array.isArray(entries)) {
+    for (const raw of entries) {
+      if (!raw || !raw.personId) continue;
+      const p = store.personById(raw.personId);
+      if (!p) return res.status(400).json({ error: '人员不存在' });
+      if (p.groupId !== groupId) return res.status(400).json({ error: `${p.name} 不在「${gname(groupId)}」中` });
+      const entry = { personId: p.id };
+      if (raw.hours !== undefined && raw.hours !== null && raw.hours !== '') {
+        const h = Number(raw.hours);
+        if (!Number.isFinite(h) || h <= 0 || h > 24) return res.status(400).json({ error: '工时需在 0-24 之间' });
+        entry.hours = h;
+      }
+      if (raw.note) entry.note = String(raw.note).slice(0, 100);
+      if (list.some((e) => e.personId === entry.personId)) {
+        return res.status(400).json({ error: `${p.name} 在同一天被安排了两次` });
+      }
+      list.push(entry);
     }
-    if (note) entry.note = String(note).slice(0, 100);
-    sch.setSlot(db, date, groupId, entry);
-    store.addLog(req.auth.name, 'admin', '修改排班',
-      `${gname(groupId)} ${date} 指派给 ${p.name}${entry.hours ? `（${entry.hours}h）` : ''}${entry.note ? ` 备注：${entry.note}` : ''}`);
   }
+  const before = sch.slotOf(db, date, groupId).map((e) => nameOf(e.personId)).filter(Boolean).join('、') || '空缺';
+  const after = list.map((e) => nameOf(e.personId)).filter(Boolean).join('、') || '空缺';
+  sch.setSlot(db, date, groupId, list);
+  store.addLog(req.auth.name, 'admin', '修改排班',
+    `${gname(groupId)} ${date}：${before} → ${after}${list.length > 1 ? `（${list.length} 人）` : ''}`);
   store.save();
   queueResendsFor([date], '管理员修改排班后自动重发');
   res.json({ ok: true, ...sendStatus(db) });
@@ -279,9 +302,8 @@ app.post('/api/regen', auth.requireAdmin, (req, res) => {
   }
   const db = store.data;
   if (!sch.groupById(db, groupId)) return res.status(400).json({ error: '分组不正确' });
-  for (let i = 0; i < 7; i++) sch.setSlot(db, sch.addDays(weekStart, i), groupId, null);
-  const done = sch.genWeeks(db, groupId);
-  db.weeksGenerated[groupId] = done.filter((w) => w !== weekStart);
+  for (let i = 0; i < 7; i++) sch.setSlot(db, sch.addDays(weekStart, i), groupId, []);
+  db.weeksGenerated[groupId] = sch.genWeeks(db, groupId).filter((w) => w !== weekStart);
   sch.ensureWeekGenerated(db, weekStart, groupId);
   store.addLog(req.auth.name, 'admin', '重新生成', `按轮换规则重新生成「${gname(groupId)}」${weekStart} 起的一周`);
   store.save();
@@ -301,10 +323,10 @@ app.post('/api/import', auth.requireAdmin, (req, res) => {
     const m = t.match(/^(\d{4}-\d{2}-\d{2})[\s,，\t]+(.+)$/);
     if (!m) { errors.push(`第 ${idx + 1} 行无法解析：${t.slice(0, 40)}`); return; }
     const date = m[1];
-    const personName = m[2].trim();
     if (!sch.isDateStr(date)) { errors.push(`第 ${idx + 1} 行日期无效：${date}`); return; }
-    if (personName === '-' || personName === '空') {
-      for (const g of db.groups) sch.setSlot(db, date, g.id, null); // '-' 表示清空整天（两组都清）
+    const rest = m[2].trim();
+    if (rest === '-' || rest === '空') {
+      for (const g of db.groups) sch.setSlot(db, date, g.id, []); // '-' 表示清空整天（两组都清）
       applied.push(`${date} 清空`);
       weeks.add(sch.weekStartOf(date));
       for (const g of db.groups) {
@@ -312,12 +334,20 @@ app.post('/api/import', auth.requireAdmin, (req, res) => {
       }
       return;
     }
-    const p = store.personByName(personName);
-    if (!p) { errors.push(`第 ${idx + 1} 行人员不存在：${personName}`); return; }
-    sch.setSlot(db, date, p.groupId, { personId: p.id });
-    applied.push(`${date}「${gname(p.groupId)}」→ ${p.name}`);
+    const names = rest.split(/[,，、\s]+/).filter(Boolean);
+    if (!names.length) { errors.push(`第 ${idx + 1} 行没有人员姓名`); return; }
+    const byGroup = {};
+    for (const nm of names) {
+      const p = store.personByName(nm);
+      if (!p) { errors.push(`第 ${idx + 1} 行人员不存在：${nm}`); return; }
+      (byGroup[p.groupId] = byGroup[p.groupId] || []).push(p);
+    }
+    for (const [gid, ps] of Object.entries(byGroup)) {
+      sch.setSlot(db, date, gid, ps.map((p) => ({ personId: p.id })));
+      if (!sch.genWeeks(db, gid).includes(sch.weekStartOf(date))) sch.genWeeks(db, gid).push(sch.weekStartOf(date));
+    }
+    applied.push(`${date}：${names.join('、')}`);
     weeks.add(sch.weekStartOf(date));
-    if (!sch.genWeeks(db, p.groupId).includes(sch.weekStartOf(date))) sch.genWeeks(db, p.groupId).push(sch.weekStartOf(date));
   });
   store.addLog(req.auth.name, 'admin', '批量导入', `${applied.length} 条生效${errors.length ? `，${errors.length} 条失败` : ''}`);
   store.save();
@@ -409,7 +439,7 @@ app.get('/api/logs', auth.requireAdmin, (req, res) => {
 
 const CONFIG_EDITABLE = [
   'webhookUrl', 'webhookSecret', 'publicUrl', 'timezone',
-  'sendHour', 'sendMinute', 'shiftStart', 'shiftEnd', 'shiftHours', 'resendDelayMs',
+  'sendHour', 'sendMinute', 'shiftStart', 'shiftEnd', 'shiftHours', 'saturdayDouble', 'resendDelayMs',
   'aiBaseUrl', 'aiModel', 'aiCheckHour', 'aiCheckMinute', 'aiCheckDays', 'aiApplyMode',
 ];
 
@@ -432,6 +462,7 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
   for (const k of CONFIG_EDITABLE) {
     if (body[k] !== undefined) { c[k] = body[k]; touched.push(k); }
   }
+  if (body.saturdayDouble !== undefined) c.saturdayDouble = !!body.saturdayDouble;
   // aiApiKey 特殊处理：不传=保持不变；'CLEAR'=删除；非空=更新（接口永不回显）
   if (body.aiApiKey !== undefined) {
     const v = String(body.aiApiKey).trim();
@@ -460,19 +491,22 @@ app.post('/api/send-now', auth.requireAdmin, ah(async (req, res) => {
   res.json({ ok: result.ok, error: result.error || '', ...sendStatus(store.data) });
 }));
 
-// —— 管理员：AI 排班（Prompt 规则）+ 夜检建议 ——
+// —— 管理员：AI 排班（Prompt 规则，按组）+ 夜检建议 ——
 app.get('/api/ai/prompt', auth.requireAdmin, (req, res) => {
-  const md = ai.readPromptMd();
-  res.json({ md, hasFile: md.trim().length > 0 });
+  res.json({ files: ai.readAllPromptMd() });
 });
 
 app.post('/api/ai/prompt', auth.requireAdmin, (req, res) => {
-  const md = String((req.body || {}).md ?? '');
-  if (md.length > 20000) return res.status(400).json({ error: '规则内容过长（上限 20000 字）' });
-  ai.writePromptMd(md);
-  store.addLog(req.auth.name, 'admin', '修改排班规则', `prompt_md/prompt.md 已更新（${md.length} 字）`);
+  const { group, md } = req.body || {};
+  const gid = String(group || 'g1');
+  if (!sch.groupById(store.data, gid)) return res.status(400).json({ error: '分组不正确' });
+  const text = String(md ?? '');
+  if (text.length > 20000) return res.status(400).json({ error: '规则内容过长（上限 20000 字）' });
+  ai.writePromptMd(gid, text);
+  store.addLog(req.auth.name, 'admin', '修改排班规则',
+    `${gname(gid)} 规则已更新（${text.length} 字，prompt_md/${gid === 'g1' ? 'prompt.md' : 'prompt_b.md'}）`);
   store.save();
-  res.json({ ok: true, md });
+  res.json({ ok: true, md: text });
 });
 
 app.post('/api/ai/generate', auth.requireAdmin, ah(async (req, res) => {
@@ -506,8 +540,8 @@ app.get('/api/ai/suggestions', auth.requireAdmin, (req, res) => {
       groupName: gname(s.groupId),
       changes: s.changes.map((c) => ({
         ...c,
-        toName: nameOf(c.toPersonId),
-        fromName: nameOf(c.fromPersonId),
+        toNames: (c.toPeopleIds || []).map((id) => nameOf(id)).filter(Boolean),
+        fromNames: (c.fromPeopleIds || []).map((id) => nameOf(id)).filter(Boolean),
       })),
     })),
   });

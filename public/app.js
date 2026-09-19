@@ -518,15 +518,15 @@ function renderStats() {
     return `
       <div class="card">
         <h3>${esc(g.name)}（${g.members.length} 人）</h3>
-        <p class="hint">覆盖 ${weeksLabel} 周 · 每班默认 ${s.shiftHours}h${s.saturdayDouble ? ' · 周六按双倍工时计入' : ''}（个别班次可按天覆盖工时）</p>
+        <p class="hint">覆盖 ${weeksLabel} 周 · <b>工时按小时累计</b>：每班默认 ${s.shiftHours}h（设置里可改），周六${s.saturdayDouble ? `按<b>双倍 ${s.shiftHours * 2}h</b> 计入` : '不双倍'}；编辑排班时可为具体人/班次单独设工时。</p>
         <table>
-          <thead><tr><th>姓名</th><th>班次</th><th>工时</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
+          <thead><tr><th>姓名</th><th>工时</th><th>班次</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
           <tbody>
             ${rows.map((r) => `
               <tr>
                 <td><b>${esc(r.name)}</b></td>
+                <td><b>${r.hours}h</b></td>
                 <td>${r.shifts}</td>
-                <td>${r.hours}h</td>
                 <td>${r.avg === null ? '—' : r.avg + 'h'}</td>
                 <td><div class="bar-wrap"><div class="bar" style="width:${Math.round(r.hours / maxH * 100)}%"></div></div></td>
               </tr>`).join('')}
@@ -725,11 +725,21 @@ function renderAi() {
 
   $$('.sug-apply').forEach((b) => {
     b.onclick = async () => {
-      if (await confirmModal('应用这条 AI 建议？应用后飞书会自动重发受影响的周。')) {
+      if (await confirmModal('应用这条 AI 建议？应用后飞书会自动重发受影响的周，并跳转排班表查看。')) {
         try {
-          await api('/api/ai/apply', { method: 'POST', body: { id: b.dataset.id } });
-          toast('已应用，飞书将自动重发 ✅', 'ok');
-          loadAi();
+          const r = await api('/api/ai/apply', { method: 'POST', body: { id: b.dataset.id } });
+          const s = r.suggestion;
+          if (s && s.scopeStart) {
+            const ws = weekStartOf(s.scopeStart);
+            toast(`已应用 ✅ 正在查看 ${fmtShort(ws)} 起的那周排班`, 'ok');
+            state.weekStart = ws;
+            state.tab = 'schedule';
+            renderShell();
+            loadTab();
+          } else {
+            toast('已应用，飞书将自动重发 ✅', 'ok');
+            loadAi();
+          }
         } catch (e) { toast(e.message, 'error'); }
       }
     };

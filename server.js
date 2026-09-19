@@ -367,21 +367,31 @@ app.post('/api/clear', auth.requireAdmin, (req, res) => {
   const db = store.data;
   db.schedule = {};
   for (const g of db.groups) db.weeksGenerated[g.id] = [];
+  // 清空排班后，旧的待处理建议全部失效（防止应用到已不存在的旧排班上）
+  let ignored = 0;
+  for (const s of db.aiSuggestions) {
+    if (s.status === 'pending') {
+      s.status = 'ignored';
+      s.appliedTime = sch.nowDisplay(db.config.timezone);
+      s.appliedBy = '系统（清空排班时自动忽略）';
+      ignored += 1;
+    }
+  }
   if (keepEmpty) {
     // 保持全空必须顺带关闭自动轮换占位，否则下次打开排班页又会自动补占位
     for (const g of db.groups) g.autoRotate = false;
     store.addLog(req.auth.name, 'admin', '清空排班',
-      '清空全部排班并保持全空、统计归零；已自动关闭各组的自动轮换占位（之后排班只来自 AI 生成或手动指派，可在「成员管理」重新开启）');
+      `清空全部排班并保持全空、统计归零；已自动关闭各组的自动轮换占位（之后排班只来自 AI 生成或手动指派，可在「成员管理」重新开启）${ignored ? `；自动忽略了 ${ignored} 条待处理 AI 建议` : ''}`);
   } else {
     ensureHorizon();
     const rotated = db.groups
       .filter((g) => g.autoRotate !== false && sch.peopleOf(db, g.id).length)
       .map((g) => g.name);
     store.addLog(req.auth.name, 'admin', '清空排班',
-      `清空全部排班并重排轮换占位：${rotated.join('、') || '无（各组自动轮换均已关闭，保持全空）'}`);
+      `清空全部排班并重排轮换占位：${rotated.join('、') || '无（各组自动轮换均已关闭，保持全空）'}${ignored ? `；自动忽略了 ${ignored} 条待处理 AI 建议` : ''}`);
   }
   store.save();
-  res.json({ ok: true, keepEmpty });
+  res.json({ ok: true, keepEmpty, ignored });
 });
 
 // —— 管理员：成员管理（增减 / 改名 / 换组）——
@@ -632,8 +642,9 @@ app.get('/api/ai/suggestions', auth.requireAdmin, (req, res) => {
       groupName: gname(s.groupId),
       changes: s.changes.map((c) => ({
         ...c,
-        toNames: (c.toPeopleIds || []).map((id) => nameOf(id)).filter(Boolean),
-        fromNames: (c.fromPeopleIds || []).map((id) => nameOf(id)).filter(Boolean),
+        // 兼容旧版单人格式
+        toNames: (c.toPeopleIds || (c.toPersonId ? [c.toPersonId] : [])).map((id) => nameOf(id)).filter(Boolean),
+        fromNames: (c.fromPeopleIds || (c.fromPersonId ? [c.fromPersonId] : [])).map((id) => nameOf(id)).filter(Boolean),
       })),
     })),
   });

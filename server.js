@@ -166,11 +166,18 @@ app.get('/api/schedule', auth.requireAuth, (req, res) => {
   ensureHorizon();
   const db = store.data;
   const ws = weekOrCurrent(req);
+  // 下周是否已有排班（前端：落在全空的本周时自动切到下周）
+  let nextWeekHasSchedule = false;
+  for (let i = 0; i < 7 && !nextWeekHasSchedule; i++) {
+    const day = db.schedule[sch.addDays(ws, 7 + i)];
+    if (day && Object.values(day).some((arr) => Array.isArray(arr) && arr.length)) nextWeekHasSchedule = true;
+  }
   res.json({
     weekStart: ws,
     isoWeek: sch.isoWeek(ws),
     days: viewWeek(db, ws),
     today: sch.todayStr(db.config.timezone),
+    nextWeekHasSchedule,
     groups: db.groups.map((g) => ({ id: g.id, name: g.name, memberCount: sch.peopleOf(db, g.id).length, autoRotate: g.autoRotate !== false })),
     people: db.people.map((p) => ({ id: p.id, name: p.name, groupId: p.groupId })),
     generatedMap: Object.fromEntries(db.groups.map((g) => [g.id, sch.genWeeks(db, g.id).includes(ws)])),

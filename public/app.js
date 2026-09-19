@@ -225,6 +225,18 @@ async function loadSchedule() {
   const curWs = weekStartOf(todayStr());
   const isAdmin = state.me.role === 'admin';
 
+  // 本周完全没排班而下周已排（AI 生成的排班通常在下周）→ 自动切到下周，避免"重进看到全空"的误会
+  if (!state.weekJumped && d.weekStart === curWs && d.nextWeekHasSchedule) {
+    const weekHas = (dd) => (dd.groups || []).some((g) => g.memberCount > 0
+      && dd.days.some((day) => ((day.groups[g.id] || {}).people || []).length > 0));
+    if (!weekHas(d)) {
+      state.weekJumped = true; // 每次进入页面只自动跳一次
+      toast('本周暂无排班，下周已排——已切到下周查看（点「回到本周」可返回）', 'info', 5000);
+      state.weekStart = addDays(curWs, 7);
+      return loadSchedule();
+    }
+  }
+
   const cards = d.days.map((day) => {
     const today = day.date === d.today;
     const myP = myPerson();

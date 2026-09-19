@@ -161,7 +161,7 @@ app.get('/api/schedule', auth.requireAuth, (req, res) => {
     isoWeek: sch.isoWeek(ws),
     days: viewWeek(db, ws),
     today: sch.todayStr(db.config.timezone),
-    groups: db.groups.map((g) => ({ id: g.id, name: g.name, memberCount: sch.peopleOf(db, g.id).length })),
+    groups: db.groups.map((g) => ({ id: g.id, name: g.name, memberCount: sch.peopleOf(db, g.id).length, autoRotate: g.autoRotate !== false })),
     people: db.people.map((p) => ({ id: p.id, name: p.name, groupId: p.groupId })),
     generatedMap: Object.fromEntries(db.groups.map((g) => [g.id, sch.genWeeks(db, g.id).includes(ws)])),
     config: {
@@ -301,7 +301,11 @@ app.post('/api/regen', auth.requireAdmin, (req, res) => {
     return res.status(400).json({ error: '需要有效的周一日期' });
   }
   const db = store.data;
-  if (!sch.groupById(db, groupId)) return res.status(400).json({ error: '分组不正确' });
+  const grp = sch.groupById(db, groupId);
+  if (!grp) return res.status(400).json({ error: '分组不正确' });
+  if (grp.autoRotate === false) {
+    return res.status(400).json({ error: `「${grp.name}」已关闭自动轮换（由 AI/手动排班），“按轮换重排”不可用；请到「AI排班」生成` });
+  }
   for (let i = 0; i < 7; i++) sch.setSlot(db, sch.addDays(weekStart, i), groupId, []);
   db.weeksGenerated[groupId] = sch.genWeeks(db, groupId).filter((w) => w !== weekStart);
   sch.ensureWeekGenerated(db, weekStart, groupId);
@@ -362,9 +366,15 @@ app.post('/api/clear', auth.requireAdmin, (req, res) => {
   const db = store.data;
   db.schedule = {};
   for (const g of db.groups) db.weeksGenerated[g.id] = [];
-  store.addLog(req.auth.name, 'admin', '清空排班', '清空全部排班后重新生成了未来 4 周占位');
-  store.save();
   ensureHorizon();
+  const rotated = db.groups
+    .filter((g) => g.autoRotate !== false && sch.peopleOf(db, g.id).length)
+    .map((g) => g.name);
+  store.addLog(req.auth.name, 'admin', '清空排班',
+    `清空全部排班${rotated.length
+      ? `；「${rotated.join('、')}」自动重排了未来 4 周轮换占位（不想重排可在成员管理关闭该组自动轮换）`
+      : '；两组自动轮换均已关闭，保持全空'}`);
+  store.save();
   res.json({ ok: true });
 });
 
@@ -372,10 +382,25 @@ app.post('/api/clear', auth.requireAdmin, (req, res) => {
 app.get('/api/members', auth.requireAdmin, (req, res) => {
   const db = store.data;
   res.json({
-    groups: db.groups.map((g) => ({ id: g.id, name: g.name })),
+    groups: db.groups.map((g) => ({ id: g.id, name: g.name, autoRotate: g.autoRotate !== false })),
     people: db.people.map((p) => ({ id: p.id, name: p.name, code: p.code || '', groupId: p.groupId })),
     defaultPassword: DEFAULT_USER_PASSWORD,
   });
+});
+
+// 组设置：自动轮换占位开关（关闭后该组排班只来自 AI 生成或手动指派，清空后保持全空）
+app.post('/api/groups', auth.requireAdmin, (req, res) => {
+  const { groupId, autoRotate } = req.body || {};
+  const db = store.data;
+  const g = sch.groupById(db, groupId);
+  if (!g) return res.status(400).json({ error: '分组不存在' });
+  const val = !!autoRotate;
+  if (g.autoRotate === val) return res.status(400).json({ error: '没有变化' });
+  g.autoRotate = val;
+  store.addLog(req.auth.name, 'admin', '调整分组设置',
+    `「${g.name}」自动轮换占位：${val ? '开启（未排班的日子自动按轮换补 1 人保底）' : '关闭（排班只来自 AI 生成或手动指派，清空后保持全空）'}`);
+  store.save();
+  res.json({ ok: true, autoRotate: val });
 });
 
 // 组内下一个未用的字母代号（a~z）

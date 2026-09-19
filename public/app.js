@@ -430,7 +430,8 @@ function openAdminDayModal(day, info) {
     ${info}
     ${blocks}
     <div class="rowbtns">
-      ${groups.map((g) => `<button class="ghost mRegen" data-gid="${g.id}">按轮换重排本周·${esc(g.name)}</button>`).join('')}
+      ${groups.filter((g) => g.autoRotate !== false)
+        .map((g) => `<button class="ghost mRegen" data-gid="${g.id}">按轮换重排本周·${esc(g.name)}</button>`).join('')}
     </div>`);
 
   groups.forEach((g) => bindSlotRows(g.id));
@@ -531,7 +532,7 @@ function renderStats() {
   $('#view').innerHTML = `
     <div class="card">
       <h3>人均工时统计</h3>
-      <p class="hint">统计起始：${s.since || '暂无数据'} · 两个组独立排班、独立统计，互不影响。</p>
+      <p class="hint">统计起始：${s.since || '暂无数据'} · 两个组独立排班、独立统计，互不影响。「全部」口径包含<b>未来已排</b>的班（含自动轮换占位），「仅已发生」只算已经过去的日期。</p>
       <div class="seg">
         ${modes.map(([k, l]) => `<button class="${state.statsMode === k ? 'active' : ''}" data-mode="${k}">${l}</button>`).join('')}
       </div>
@@ -775,6 +776,16 @@ async function loadSettings() {
         return `
         <div class="member-group">
           <h4>${esc(g.name)}（${members.length} 人）</h4>
+          <div class="grp-cfg">
+            <span class="hint">自动轮换占位：</span>
+            <select class="arot" data-g="${g.id}">
+              <option value="1" ${g.autoRotate !== false ? 'selected' : ''}>开</option>
+              <option value="0" ${g.autoRotate === false ? 'selected' : ''}>关</option>
+            </select>
+            <span class="hint">${g.autoRotate !== false
+              ? '未排班的日子自动按轮换补 1 人保底（含周五/周日）'
+              : '不自动占位：排班只来自「AI排班」生成或手动指派，清空排班后保持全空'}</span>
+          </div>
           ${members.length ? members.map((p) => `
             <div class="member-row">
               <span class="name">${esc(p.name)}${p.code && p.code !== p.name ? `<span class="code-chip" title="代号：规则 md 与 AI 识别用">${esc(p.code)}</span>` : ''}</span>
@@ -913,7 +924,8 @@ async function loadSettings() {
 
     <div class="card">
       <h3 style="color:var(--danger)">⚠️ 危险区</h3>
-      <p class="hint">清空全部排班数据（然后自动重排未来 4 周占位）。输入 <code>CLEAR</code> 确认。</p>
+      <p class="hint">清空全部排班。开了「自动轮换占位」的组会立即重排未来 4 周占位（统计也会算上）；
+        想清空后保持全空（等 AI 生成），先到「成员管理」把该组的自动轮换关掉。输入 <code>CLEAR</code> 确认。</p>
       <input id="clearConfirm" placeholder="CLEAR">
       <div class="rowbtns"><button id="btnClear" class="danger">清空全部排班</button></div>
     </div>`;
@@ -965,6 +977,15 @@ async function loadSettings() {
       loadSettings();
     } catch (e) { toast(e.message, 'error'); }
   };
+  $$('.arot').forEach((sel) => {
+    sel.onchange = async () => {
+      try {
+        await api('/api/groups', { method: 'POST', body: { groupId: sel.dataset.g, autoRotate: sel.value === '1' } });
+        toast(sel.value === '1' ? '已开启该组自动轮换占位' : '已关闭该组自动轮换：排班只来自 AI 生成或手动指派', 'ok');
+        loadSettings();
+      } catch (e) { toast(e.message, 'error'); loadSettings(); }
+    };
+  });
   $$('.rn').forEach((b) => {
     b.onclick = () => {
       showModal(`改名 · ${esc(b.dataset.name)}`, `

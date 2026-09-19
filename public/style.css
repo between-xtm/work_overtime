@@ -194,6 +194,8 @@ textarea.mono { font-family: Consolas, "Courier New", monospace; font-size: 13px
 /* —— 成员管理 —— */
 .member-group { margin-top: 12px; }
 .member-group h4 { margin: 0 0 2px; font-size: 14px; }
+.grp-cfg { display: flex; align-items: center; gap: 6px; margin: 2px 0 8px; flex-wrap: wrap; }
+.grp-cfg select { width: auto; padding: 4px 10px; font-size: 13px; }
 .member-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
 .member-row .name { flex: 1; font-weight: 600; }
 .code-chip {

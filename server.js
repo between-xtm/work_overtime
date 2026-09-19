@@ -363,19 +363,25 @@ app.post('/api/import', auth.requireAdmin, (req, res) => {
 
 app.post('/api/clear', auth.requireAdmin, (req, res) => {
   if ((req.body || {}).confirm !== 'CLEAR') return res.status(400).json({ error: '请输入 CLEAR 确认清空' });
+  const keepEmpty = (req.body || {}).keepEmpty !== false; // 默认保持全空（清空即归零）
   const db = store.data;
   db.schedule = {};
   for (const g of db.groups) db.weeksGenerated[g.id] = [];
-  ensureHorizon();
-  const rotated = db.groups
-    .filter((g) => g.autoRotate !== false && sch.peopleOf(db, g.id).length)
-    .map((g) => g.name);
-  store.addLog(req.auth.name, 'admin', '清空排班',
-    `清空全部排班${rotated.length
-      ? `；「${rotated.join('、')}」自动重排了未来 4 周轮换占位（不想重排可在成员管理关闭该组自动轮换）`
-      : '；两组自动轮换均已关闭，保持全空'}`);
+  if (keepEmpty) {
+    // 保持全空必须顺带关闭自动轮换占位，否则下次打开排班页又会自动补占位
+    for (const g of db.groups) g.autoRotate = false;
+    store.addLog(req.auth.name, 'admin', '清空排班',
+      '清空全部排班并保持全空、统计归零；已自动关闭各组的自动轮换占位（之后排班只来自 AI 生成或手动指派，可在「成员管理」重新开启）');
+  } else {
+    ensureHorizon();
+    const rotated = db.groups
+      .filter((g) => g.autoRotate !== false && sch.peopleOf(db, g.id).length)
+      .map((g) => g.name);
+    store.addLog(req.auth.name, 'admin', '清空排班',
+      `清空全部排班并重排轮换占位：${rotated.join('、') || '无（各组自动轮换均已关闭，保持全空）'}`);
+  }
   store.save();
-  res.json({ ok: true });
+  res.json({ ok: true, keepEmpty });
 });
 
 // —— 管理员：成员管理（增减 / 改名 / 换组）——

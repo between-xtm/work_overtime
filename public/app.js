@@ -933,10 +933,14 @@ async function loadSettings() {
 
     <div class="card">
       <h3 style="color:var(--danger)">⚠️ 危险区</h3>
-      <p class="hint">清空全部排班。开了「自动轮换占位」的组会立即重排未来 4 周占位（统计也会算上）；
-        想清空后保持全空（等 AI 生成），先到「成员管理」把该组的自动轮换关掉。输入 <code>CLEAR</code> 确认。</p>
+      <p class="hint">两种模式都需输入 <code>CLEAR</code> 确认：
+        <br>· <b>清空并保持全空（推荐）</b>：排班归零、<b>统计归零</b>，并自动关闭两组的「自动轮换占位」——之后排班只来自「AI排班」生成或手动指派（想恢复轮换去「成员管理」重新开启）
+        <br>· <b>清空并重排占位</b>：老行为，开轮换的组立即补排未来 4 周</p>
       <input id="clearConfirm" placeholder="CLEAR">
-      <div class="rowbtns"><button id="btnClear" class="danger">清空全部排班</button></div>
+      <div class="rowbtns">
+        <button id="btnClearEmpty" class="danger">清空并保持全空</button>
+        <button id="btnClearRegen" class="ghost">清空并重排占位</button>
+      </div>
     </div>`;
 
   $('#btnSaveCfg').onclick = async () => {
@@ -1063,13 +1067,17 @@ async function loadSettings() {
     } catch (e) { toast(e.message, 'error'); }
   };
 
-  $('#btnClear').onclick = async () => {
+  const doClear = async (keepEmpty) => {
     if ($('#clearConfirm').value !== 'CLEAR') return toast('请先输入 CLEAR 确认', 'warn');
     try {
-      await api('/api/clear', { method: 'POST', body: { confirm: 'CLEAR' } });
-      toast('已清空并重排未来 4 周', 'ok');
+      await api('/api/clear', { method: 'POST', body: { confirm: 'CLEAR', keepEmpty } });
+      toast(keepEmpty
+        ? '已清空并保持全空：排班/统计归零，自动轮换占位已关闭 ✅'
+        : '已清空并重排轮换占位', 'ok');
     } catch (e) { toast(e.message, 'error'); }
   };
+  $('#btnClearEmpty').onclick = () => doClear(true);
+  $('#btnClearRegen').onclick = () => doClear(false);
 }
 
 /* ================= 日志（管理员） ================= */

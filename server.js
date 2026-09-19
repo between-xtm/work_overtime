@@ -14,7 +14,16 @@ const app = express();
 const PORT = Number(process.env.PORT) || 8787;
 
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// 静态文件必须每次向服务器校验（no-cache：改动立即生效；未改动 304），
+// 否则成员浏览器缓存旧版 app.js 会读不懂新接口结构，排班表显示成全空
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
+// 接口响应一律不缓存
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 app.use(auth.middleware(store));
 
 // 统一捕获 async 异常

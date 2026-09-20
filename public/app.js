@@ -533,8 +533,8 @@ function renderStats() {
       <div class="card">
         <h3>${esc(g.name)}（${g.members.length} 人）</h3>
         <p class="hint">覆盖 ${weeksLabel} 周 · <b>工时按小时累计</b>：每班默认 ${s.shiftHours}h（设置里可改），周六${s.saturdayDouble ? `按<b>双倍 ${s.shiftHours * 2}h</b> 计入` : '不双倍'}；编辑排班时可为具体人/班次单独设工时。</p>
-        <table>
-          <thead><tr><th>姓名</th><th>工时</th><th>班次</th><th>周均工时</th><th style="width:30%">占比</th></tr></thead>
+        <div class="tscroll"><table>
+          <thead><tr><th>姓名</th><th>工时</th><th>班次</th><th>周均工时</th><th style="width:26%;min-width:96px">占比</th></tr></thead>
           <tbody>
             ${rows.map((r) => `
               <tr>
@@ -545,7 +545,7 @@ function renderStats() {
                 <td><div class="bar-wrap"><div class="bar" style="width:${Math.round(r.hours / maxH * 100)}%"></div></div></td>
               </tr>`).join('')}
           </tbody>
-        </table>
+        </table></div>
         ${fairnessNote(rows)}
       </div>`;
   }).join('');
@@ -1111,7 +1111,7 @@ async function loadLogs() {
   $('#view').innerHTML = `
     <div class="card">
       <h3>变更日志（最近 200 条）</h3>
-      <table>
+      <div class="tscroll"><table>
         <thead><tr><th style="width:150px">时间</th><th style="width:120px">操作人</th><th style="width:90px">动作</th><th>内容</th></tr></thead>
         <tbody>
           ${r.logs.map((l) => `
@@ -1122,7 +1122,7 @@ async function loadLogs() {
               <td>${esc(l.detail)}</td>
             </tr>`).join('') || '<tr><td colspan="4" class="hint">暂无日志</td></tr>'}
         </tbody>
-      </table>
+      </table></div>
     </div>`;
 }
 

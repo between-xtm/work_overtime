@@ -92,10 +92,10 @@ main#view { max-width: 980px; margin: 0 auto; padding: 16px 14px 60px; }
 .weektitle small { color: var(--muted); font-weight: 400; }
 
 /* —— 日期卡片 —— */
-.daygrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.daygrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 215px), 1fr)); gap: 10px; }
 .day {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px; cursor: pointer; position: relative; min-height: 92px;
+  padding: 12px; cursor: pointer; position: relative; min-height: 116px;
   transition: box-shadow .15s, transform .15s;
 }
 .day:hover { box-shadow: 0 6px 18px rgba(31, 41, 55, .1); }
@@ -110,18 +110,20 @@ main#view { max-width: 980px; margin: 0 auto; padding: 16px 14px 60px; }
 }
 .badge.empty { background: var(--warn); }
 
-/* —— 日卡里的分组行 —— */
-.day { min-height: 116px; }
-.g-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 14px; }
+/* —— 日卡里的分组行（人名多时自动换行，不截断） —— */
+.g-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 0; font-size: 14px; }
 .g-row + .g-row { border-top: 1px dashed var(--line); }
 .g-tag {
   font-size: 11px; line-height: 1.7; padding: 0 7px; border-radius: 999px;
-  flex: none; background: #eef1f6; color: var(--muted);
+  flex: none; background: #eef1f6; color: var(--muted); margin-top: 1px;
 }
 .g-tag.gtag-0 { background: #e4ecff; color: var(--primary); }
 .g-tag.gtag-1 { background: #e2f5ea; color: var(--ok); }
-.g-name { flex: 1; font-weight: 600; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.g-meta { font-size: 12px; color: var(--muted); flex: none; }
+.g-name {
+  flex: 1; min-width: 0; font-weight: 600; line-height: 1.5;
+  white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+}
+.g-meta { font-size: 12px; color: var(--muted); flex: none; margin-top: 1px; }
 .g-row.is-mine { background: var(--primary-soft); border-radius: 8px; padding: 4px 6px; margin: 0 -6px; }
 .g-row.is-mine .g-name { color: var(--primary); }
 .g-row.is-empty .g-name { color: #b6bec9; font-size: 13px; font-weight: 500; }
@@ -136,6 +138,14 @@ table { width: 100%; border-collapse: collapse; background: var(--card); border-
 th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); font-size: 14px; }
 th { background: #f8fafd; color: var(--muted); font-weight: 600; font-size: 13px; }
 tr:last-child td { border-bottom: none; }
+/* 小屏：表格在滚动容器里横向滑动，不挤压换行 */
+.tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tscroll table { min-width: 460px; }
+.tscroll .bar-wrap { min-width: 96px; }
+@media (max-width: 640px) {
+  th, td { padding: 8px 10px; font-size: 13px; }
+  td { overflow-wrap: anywhere; }
+}
 .bar-wrap { background: #eef1f6; border-radius: 999px; height: 10px; overflow: hidden; min-width: 80px; }
 .bar { height: 100%; background: linear-gradient(90deg, #60a5fa, var(--primary)); border-radius: 999px; }
 
@@ -184,12 +194,16 @@ textarea.mono { font-family: Consolas, "Courier New", monospace; font-size: 13px
 .grp-inline > div { flex: 1; min-width: 0; }
 .grp-inline label { margin: 8px 0 4px; }
 .slot-rows { margin-top: 6px; }
-.slot-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
-.slot-row select { flex: 1.4; min-width: 0; }
+.slot-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; flex-wrap: wrap; }
+.slot-row select { flex: 1.4; min-width: 130px; }
 .slot-row .sr-hours { flex: none; width: 84px; }
-.slot-row .sr-note { flex: 1; min-width: 0; }
+.slot-row .sr-note { flex: 1; min-width: 120px; }
 .slot-row .sr-del { flex: none; padding: 5px 10px; }
 .grp-tools { display: flex; gap: 8px; margin-top: 8px; }
+@media (max-width: 480px) {
+  .grp-inline { flex-direction: column; gap: 0; }
+  .slot-row select { flex: 1 1 100%; }
+}
 
 /* —— 成员管理 —— */
 .member-group { margin-top: 12px; }

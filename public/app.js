@@ -1000,6 +1000,8 @@ async function loadSettings() {
         返回 JSON：<code>{"ip":"...","inWorkArea":true,"matched":"192.168.1.0/24"}</code>。<br>
         示例：<code>curl -H "X-Check-Key: 你的口令" http://服务器IP:8787/api/where-am-i</code>——
         在要验证的那台机器上执行，返回的就是该机器的判定结果。</p>
+      <div class="rowbtns"><button id="btnSaveIp" class="primary">保存 IP 验证配置</button></div>
+      <p class="hint">保存后立即生效（无需重启），去排班页点「📍 验证我是否在工作区域」测试。</p>
     </div>
 
     <div class="card">
@@ -1052,6 +1054,21 @@ async function loadSettings() {
       await api('/api/config', { method: 'POST', body });
       toast('设置已保存 ✅', 'ok');
       loadSettings();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
+  // —— IP 验证卡片独立保存（只提交本卡片字段，不影响其它设置）——
+  $('#btnSaveIp').onclick = async () => {
+    try {
+      await api('/api/config', {
+        method: 'POST',
+        body: {
+          ipRanges: $('#cfgIpRanges').value.trim(),
+          ipCheckKey: $('#cfgIpKey').value.trim(),
+          trustForwarded: $('#cfgTrustFwd').value === '1',
+        },
+      });
+      toast('IP 验证配置已保存 ✅ 立即生效，去排班页点按钮测试', 'ok');
     } catch (e) { toast(e.message, 'error'); }
   };
 

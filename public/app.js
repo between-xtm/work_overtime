@@ -300,7 +300,7 @@ async function loadSchedule() {
     try {
       const r = await api('/api/where-am-i');
       if (r.configured === false) {
-        out.textContent = r.hint || '管理员尚未配置工作区域 IP 段';
+        out.innerHTML = `${esc(r.hint || '管理员尚未配置工作区域 IP 段')}<br>你当前 IP：<b>${esc(r.ip)}</b>（在公司时把这个 IP 或它所在网段填进「设置→工作区域 IP 验证」即可）`;
         out.className = 'inline-note';
       } else if (r.inWorkArea) {
         out.innerHTML = `✅ 你现在在工作区域（IP：${esc(r.ip)}${r.matched ? ` · 命中 ${esc(r.matched)}` : ''}）`;

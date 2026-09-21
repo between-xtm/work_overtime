@@ -8,6 +8,7 @@ const sch = require('./lib/scheduler');
 const feishu = require('./lib/feishu');
 const ai = require('./lib/ai');
 const ipcheck = require('./lib/ipcheck');
+const juku = require('./lib/juku');
 const cronJob = require('./lib/cron');
 
 const store = new Store();
@@ -188,6 +189,7 @@ app.get('/api/schedule', auth.requireAuth, (req, res) => {
       shiftHours: db.config.shiftHours,
       saturdayDouble: !!db.config.saturdayDouble,
       publicUrl: db.config.publicUrl,
+      jukuUrl: db.config.jukuBaseUrl || '',
     },
     me: req.auth,
     ...sendStatus(db),
@@ -455,7 +457,7 @@ function codeClash(db, groupId, code, exceptId) {
     && p.code && p.code.toLowerCase() === c) || null;
 }
 
-app.post('/api/members/add', auth.requireAdmin, (req, res) => {
+app.post('/api/members/add', auth.requireAdmin, ah(async (req, res) => {
   const { name, groupId, password, code } = req.body || {};
   const n = String(name || '').trim();
   if (!n) return res.status(400).json({ error: '请输入姓名' });
@@ -476,9 +478,18 @@ app.post('/api/members/add', auth.requireAdmin, (req, res) => {
   db.people.push(person);
   store.addLog(req.auth.name, 'admin', '添加成员',
     `${n}（代号 ${cd || '无'}）加入「${gname(groupId)}」（初始密码：${password ? '已单独设置' : '默认 ' + DEFAULT_USER_PASSWORD}，请登录后修改）`);
+  // 自动注册短剧账号（果果剧库）；剧库不可达不阻塞加成员
+  const jukuResult = await juku.ensureAccount(store, { username: n });
+  if (jukuResult.created) {
+    store.addLog(req.auth.name, 'admin', '短剧账号', `已为 ${n} 自动创建短剧账号（密码已一次性显示，请转告本人）`);
+  } else if (jukuResult.error) {
+    store.addLog(req.auth.name, 'admin', '短剧账号', `为 ${n} 创建短剧账号失败：${jukuResult.error}（可到设置里点「同步短剧账号」补建）`);
+  } else if (jukuResult.existed) {
+    store.addLog(req.auth.name, 'admin', '短剧账号', `${n} 的短剧账号已存在，跳过`);
+  }
   store.save();
-  res.json({ ok: true, person: { id: person.id, name: person.name, code: cd, groupId } });
-});
+  res.json({ ok: true, person: { id: person.id, name: person.name, code: cd, groupId }, juku: jukuResult });
+}));
 
 // 改名：姓名（登录/显示）与代号（规则 md / AI 识别）分开；排班存的是内部 ID，改名自动生效
 app.post('/api/members/rename', auth.requireAdmin, (req, res) => {
@@ -562,6 +573,7 @@ const CONFIG_EDITABLE = [
   'sendHour', 'sendMinute', 'shiftStart', 'shiftEnd', 'shiftHours', 'saturdayDouble', 'resendDelayMs',
   'aiBaseUrl', 'aiModel', 'aiCheckHour', 'aiCheckMinute', 'aiCheckDays', 'aiApplyMode',
   'ipRanges', 'ipCheckKey',
+  'jukuBaseUrl', 'jukuAdminUser',
 ];
 
 app.get('/api/config', auth.requireAdmin, (req, res) => {
@@ -569,10 +581,14 @@ app.get('/api/config', auth.requireAdmin, (req, res) => {
   const key = String(c.aiApiKey || '');
   c.hasAiKey = !!key;
   c.aiKeyMask = key ? `${key.slice(0, 5)}…${key.slice(-4)}` : '';
+  const jpass = String(c.jukuAdminPassword || '');
+  c.hasJukuPass = !!jpass;
+  c.jukuPassMask = jpass ? `${jpass.slice(0, 2)}…${jpass.slice(-2)}` : '';
   c.lastSend = store.data.lastSend;
   delete c.aiApiKey;
   delete c.adminPasswordHash;
   delete c.adminSalt;
+  delete c.jukuAdminPassword;
   res.json(c);
 });
 
@@ -584,11 +600,16 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
     if (body[k] !== undefined) { c[k] = body[k]; touched.push(k); }
   }
   if (body.saturdayDouble !== undefined) c.saturdayDouble = !!body.saturdayDouble;
-  // aiApiKey 特殊处理：不传=保持不变；'CLEAR'=删除；非空=更新（接口永不回显）
+  // aiApiKey / jukuAdminPassword 特殊处理：不传=保持不变；'CLEAR'=删除；非空=更新（接口永不回显）
   if (body.aiApiKey !== undefined) {
     const v = String(body.aiApiKey).trim();
     if (v === 'CLEAR') { c.aiApiKey = ''; touched.push('aiApiKey(删除)'); }
     else if (v) { c.aiApiKey = v; touched.push('aiApiKey'); }
+  }
+  if (body.jukuAdminPassword !== undefined) {
+    const v = String(body.jukuAdminPassword).trim();
+    if (v === 'CLEAR') { c.jukuAdminPassword = ''; touched.push('剧库密码(删除)'); }
+    else if (v) { c.jukuAdminPassword = v; touched.push('剧库密码'); }
   }
   c.sendHour = Math.min(23, Math.max(0, c.sendHour | 0));
   c.sendMinute = Math.min(59, Math.max(0, c.sendMinute | 0));
@@ -599,6 +620,8 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
   c.resendDelayMs = Math.min(60_000, Math.max(0, c.resendDelayMs | 0));
   c.ipRanges = String(c.ipRanges || '').slice(0, 500);
   c.ipCheckKey = String(c.ipCheckKey || '').slice(0, 100);
+  c.jukuBaseUrl = String(c.jukuBaseUrl || '').slice(0, 200);
+  c.jukuAdminUser = String(c.jukuAdminUser || '').slice(0, 64);
   if (body.trustForwarded !== undefined) c.trustForwarded = !!body.trustForwarded;
   if (c.aiApplyMode !== 'auto') c.aiApplyMode = 'notify';
   store.addLog(req.auth.name, 'admin', '修改设置', touched.length ? `更新：${touched.join('、')}` : '无变更');
@@ -607,6 +630,18 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
   cronJob.catchup(store);      // 补发判断（如刚配好 webhook）
   res.json({ ok: true });
 });
+
+// —— 管理员：果果剧库联动 ——
+// 存量同步：为所有还没有短剧账号的成员补建（返回一次性密码列表）
+app.post('/api/juku/sync', auth.requireAdmin, ah(async (req, res) => {
+  const initPolicy = !!((req.body || {}).initPolicy);
+  try {
+    const result = await juku.syncAll(store, req.auth.name, { initPolicy });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}));
 
 // —— 工作区域 IP 验证（网页按钮 + 自动化/MCP 口子；纯查询，不写任何数据）——
 app.get('/api/where-am-i', (req, res) => {

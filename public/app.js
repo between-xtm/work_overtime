@@ -281,6 +281,7 @@ async function loadSchedule() {
     <div class="sendbar">${sendBarHtml(d)}</div>
     <div class="ipcheck-bar">
       <button id="btnIpCheck" class="ghost btn-sm">📍 验证我是否在工作区域</button>
+      ${d.config.jukuUrl ? '<button id="btnJuku" class="ghost btn-sm">🎬 加班看剧</button>' : ''}
       <span id="ipCheckResult" class="inline-note"></span>
     </div>
     ${isAdmin
@@ -316,6 +317,9 @@ async function loadSchedule() {
       btn.disabled = false;
     }
   };
+
+  const btnJuku = $('#btnJuku');
+  if (btnJuku) btnJuku.onclick = () => window.open(state.data.config.jukuUrl, '_blank');
 }
 
 function sendBarHtml(d) {
@@ -1005,6 +1009,36 @@ async function loadSettings() {
     </div>
 
     <div class="card">
+      <h3>🎬 短剧账号联动（果果剧库）</h3>
+      <p class="hint">配置后：<b>添加成员自动注册同名短剧账号</b>（默认"仅在线观看"）；「同步短剧账号」为存量成员一次性补建。
+        密码由系统随机生成、<b>只显示一次</b>，请立即转告成员本人（成员可在剧库里自行改密；剧库无法找回密码，忘了只能重建）。
+        剧库不可达不影响排班站任何功能。</p>
+      <div class="form-grid">
+        <div class="full">
+          <label>剧库地址（如 http://服务器IP:8999；留空=关闭联动与「加班看剧」入口）</label>
+          <input id="cfgJukuUrl" placeholder="http://服务器IP:8999" value="${esc(c.jukuBaseUrl || '')}">
+        </div>
+        <div>
+          <label>剧库管理员账号</label>
+          <input id="cfgJukuUser" value="${esc(c.jukuAdminUser || '')}">
+        </div>
+        <div>
+          <label>剧库管理员密码${c.hasJukuPass ? `（已配置 ${esc(c.jukuPassMask)}，输入新值覆盖，输入 CLEAR 删除）` : '（未配置）'}</label>
+          <input id="cfgJukuPass" type="password" placeholder="${c.hasJukuPass ? '留空保持不变' : '剧库管理员密码'}" autocomplete="off">
+        </div>
+      </div>
+      <div class="rowbtns">
+        <button id="btnSaveJuku" class="primary">保存剧库配置</button>
+        <button id="btnJukuSync" class="ghost">🔄 同步短剧账号（存量补建）</button>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+        <input type="checkbox" id="jukuInitPolicy" style="width:auto" checked>
+        <span class="hint">同步时顺便开启剧库「必须登录 + 关闭自助注册」</span>
+      </label>
+      <div id="jukuSyncResult"></div>
+    </div>
+
+    <div class="card">
       <h3>📥 批量导入排班</h3>
       <p class="hint">每行：<code>日期 姓名1 姓名2 …</code>（逗号/空格分隔，一天可多人，自动落到各成员所在组；也可以直接写代号 a/b/c）；
         姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
@@ -1072,12 +1106,58 @@ async function loadSettings() {
     } catch (e) { toast(e.message, 'error'); }
   };
 
+  // —— 剧库联动 ——
+  $('#btnSaveJuku').onclick = async () => {
+    const body = {
+      jukuBaseUrl: $('#cfgJukuUrl').value.trim(),
+      jukuAdminUser: $('#cfgJukuUser').value.trim(),
+    };
+    const pass = $('#cfgJukuPass').value.trim();
+    if (pass) body.jukuAdminPassword = pass;
+    try {
+      await api('/api/config', { method: 'POST', body });
+      toast('剧库配置已保存 ✅（入口按钮在排班页下方）', 'ok');
+      loadSettings();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+
+  $('#btnJukuSync').onclick = async () => {
+    const btn = $('#btnJukuSync');
+    btn.disabled = true;
+    $('#jukuSyncResult').innerHTML = '<span class="inline-note">正在连接剧库并同步…</span>';
+    try {
+      const r = await api('/api/juku/sync', {
+        method: 'POST',
+        body: { initPolicy: $('#jukuInitPolicy').checked },
+      });
+      const lines = [];
+      if (r.created && r.created.length) {
+        lines.push('<p class="hint">✅ <b>新建账号（密码只显示这一次，请立即复制转告本人）：</b></p>');
+        lines.push(`<table><thead><tr><th>成员</th><th>短剧账号</th><th>初始密码（一次性）</th></tr></thead><tbody>${
+          r.created.map((x) => `<tr><td>${esc(x.name)}</td><td>${esc(x.name)}</td><td><b>${esc(x.password)}</b></td></tr>`).join('')
+        }</tbody></table>`);
+      }
+      if (r.failed && r.failed.length) {
+        lines.push(`<p class="hint" style="color:var(--danger)">⚠️ 失败 ${r.failed.length} 个：${r.failed.map((x) => `${esc(x.name)}（${esc(x.error)}）`).join('；')}</p>`);
+      }
+      if (r.policyError) lines.push(`<p class="hint" style="color:var(--danger)">⚠️ 剧库策略设置失败：${esc(r.policyError)}</p>`);
+      if (!r.created || !r.created.length) lines.push('<p class="hint">没有需要补建的账号（成员都已有短剧账号）。</p>');
+      $('#jukuSyncResult').innerHTML = lines.join('');
+      toast(r.ok ? `同步完成：新建 ${r.created.length} 个` : `同步完成，但有 ${r.failed.length} 项失败`, r.ok ? 'ok' : 'warn', 5000);
+    } catch (e) {
+      $('#jukuSyncResult').innerHTML = `<p class="hint" style="color:var(--danger)">${esc(e.message)}</p>`;
+      toast(e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
   // —— 成员管理 ——
   $('#btnMemberAdd').onclick = async () => {
     const name = $('#mbName').value.trim();
     if (!name) return toast('请输入姓名', 'warn');
     try {
-      await api('/api/members/add', {
+      const r = await api('/api/members/add', {
         method: 'POST',
         body: {
           name,
@@ -1087,6 +1167,15 @@ async function loadSettings() {
         },
       });
       toast(`已添加成员「${name}」✅`, 'ok');
+      if (r.juku && r.juku.created) {
+        showModal('短剧账号已自动创建', `
+          <p class="hint">成员「${esc(name)}」的短剧账号已建好，密码<b>只显示这一次</b>，请立即转告本人：</p>
+          <div class="dayinfo">短剧账号：<b>${esc(name)}</b><br>初始密码：<b>${esc(r.juku.password)}</b><br>（登录剧库后可在账号弹窗自行改密；剧库无法找回密码，请提醒记牢）</div>
+          <div class="rowbtns"><button id="jukuOk" class="primary">我已记下</button></div>`);
+        $('#jukuOk').onclick = closeModal;
+      } else if (r.juku && r.juku.error) {
+        toast(`短剧账号创建失败：${r.juku.error}（可在设置里点「同步短剧账号」补建）`, 'warn', 6000);
+      }
       loadSettings();
     } catch (e) { toast(e.message, 'error'); }
   };

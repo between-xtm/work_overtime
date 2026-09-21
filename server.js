@@ -7,6 +7,7 @@ const auth = require('./lib/auth');
 const sch = require('./lib/scheduler');
 const feishu = require('./lib/feishu');
 const ai = require('./lib/ai');
+const ipcheck = require('./lib/ipcheck');
 const cronJob = require('./lib/cron');
 
 const store = new Store();
@@ -560,6 +561,7 @@ const CONFIG_EDITABLE = [
   'webhookUrl', 'webhookSecret', 'publicUrl', 'timezone',
   'sendHour', 'sendMinute', 'shiftStart', 'shiftEnd', 'shiftHours', 'saturdayDouble', 'resendDelayMs',
   'aiBaseUrl', 'aiModel', 'aiCheckHour', 'aiCheckMinute', 'aiCheckDays', 'aiApplyMode',
+  'ipRanges', 'ipCheckKey',
 ];
 
 app.get('/api/config', auth.requireAdmin, (req, res) => {
@@ -595,12 +597,41 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
   c.aiCheckDays = Math.min(60, Math.max(1, c.aiCheckDays | 0 || 14));
   c.shiftHours = Math.min(24, Math.max(0.5, Number(c.shiftHours) || 8));
   c.resendDelayMs = Math.min(60_000, Math.max(0, c.resendDelayMs | 0));
+  c.ipRanges = String(c.ipRanges || '').slice(0, 500);
+  c.ipCheckKey = String(c.ipCheckKey || '').slice(0, 100);
+  if (body.trustForwarded !== undefined) c.trustForwarded = !!body.trustForwarded;
   if (c.aiApplyMode !== 'auto') c.aiApplyMode = 'notify';
   store.addLog(req.auth.name, 'admin', '修改设置', touched.length ? `更新：${touched.join('、')}` : '无变更');
   store.save();
   cronJob.reschedule(store);   // 发送时刻可能变了
   cronJob.catchup(store);      // 补发判断（如刚配好 webhook）
   res.json({ ok: true });
+});
+
+// —— 工作区域 IP 验证（网页按钮 + 自动化/MCP 口子；纯查询，不写任何数据）——
+app.get('/api/where-am-i', (req, res) => {
+  const db = store.data;
+  const cfg = db.config;
+  const keyOk = cfg.ipCheckKey && req.headers['x-check-key'] === cfg.ipCheckKey;
+  if (!req.auth && !keyOk) {
+    return res.status(401).json({ error: '请先登录，或由自动化工具携带 X-Check-Key 请求头调用' });
+  }
+  const ip = ipcheck.clientIp(req, cfg.trustForwarded);
+  const ranges = String(cfg.ipRanges || '');
+  const list = ranges.split(/[,，\s]+/).filter(Boolean);
+  if (!list.length) {
+    return res.json({ ok: true, ip, configured: false, inWorkArea: null, hint: '管理员尚未配置工作区域 IP 段' });
+  }
+  const matched = ipcheck.ipInRanges(ip, ranges);
+  res.json({
+    ok: true,
+    ip,
+    configured: true,
+    inWorkArea: !!matched,
+    matched: matched || '',
+    ranges: list,
+    time: sch.nowDisplay(cfg.timezone),
+  });
 });
 
 app.post('/api/send-now', auth.requireAdmin, ah(async (req, res) => {

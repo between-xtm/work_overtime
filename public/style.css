@@ -133,6 +133,9 @@ main#view { max-width: 980px; margin: 0 auto; padding: 16px 14px 60px; }
 .sendbar .ok { color: var(--ok); }
 .sendbar .bad { color: var(--danger); }
 
+/* —— 工作区域 IP 验证 —— */
+.ipcheck-bar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+
 /* —— 表格 —— */
 table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: var(--radius); overflow: hidden; }
 th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); font-size: 14px; }

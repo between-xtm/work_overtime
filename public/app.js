@@ -279,6 +279,10 @@ async function loadSchedule() {
     </div>
     <div class="daygrid">${cards}</div>
     <div class="sendbar">${sendBarHtml(d)}</div>
+    <div class="ipcheck-bar">
+      <button id="btnIpCheck" class="ghost btn-sm">📍 验证我是否在工作区域</button>
+      <span id="ipCheckResult" class="inline-note"></span>
+    </div>
     ${isAdmin
       ? '<p class="hint">管理员提示：点击日期可按组编辑当天出勤名单（可多人）；两组互不影响，各排各的。</p>'
       : '<p class="hint">提示：每天两组各有 0~N 人出勤。点击日期可处理<b>自己组</b>的班：换班 / 弃班 / 认领加入。</p>'}`;
@@ -287,6 +291,31 @@ async function loadSchedule() {
   $('#wNext').onclick = () => { state.weekStart = addDays(state.weekStart, 7); loadSchedule(); };
   $('#wToday').onclick = () => { state.weekStart = weekStartOf(todayStr()); loadSchedule(); };
   $$('.day').forEach((el) => { el.onclick = () => openDayModal(el.dataset.date); });
+
+  $('#btnIpCheck').onclick = async () => {
+    const btn = $('#btnIpCheck');
+    const out = $('#ipCheckResult');
+    btn.disabled = true;
+    out.textContent = '检测中…';
+    try {
+      const r = await api('/api/where-am-i');
+      if (r.configured === false) {
+        out.textContent = r.hint || '管理员尚未配置工作区域 IP 段';
+        out.className = 'inline-note';
+      } else if (r.inWorkArea) {
+        out.innerHTML = `✅ 你现在在工作区域（IP：${esc(r.ip)}${r.matched ? ` · 命中 ${esc(r.matched)}` : ''}）`;
+        out.className = 'inline-note ok';
+      } else {
+        out.innerHTML = `⚠️ 你不在工作区域（IP：${esc(r.ip)}，未命中 ${esc((r.ranges || []).join('、')) || '任何 IP 段'}）`;
+        out.className = 'inline-note bad';
+      }
+    } catch (e) {
+      out.textContent = e.message;
+      out.className = 'inline-note bad';
+    } finally {
+      btn.disabled = false;
+    }
+  };
 }
 
 function sendBarHtml(d) {
@@ -947,6 +976,33 @@ async function loadSettings() {
     </div>
 
     <div class="card">
+      <h3>📍 工作区域 IP 验证</h3>
+      <p class="hint">成员在排班页可点「验证我是否在工作区域」：判定依据是请求来源 IP 是否命中下面配置的 IP 段。
+        支持 CIDR（如 <code>192.168.1.0/24</code>）和单 IP，逗号分隔。</p>
+      <div class="form-grid">
+        <div class="full">
+          <label>工作区域 IP 段（逗号分隔；留空=未配置，按钮会提示未配置）</label>
+          <input id="cfgIpRanges" placeholder="192.168.1.0/24,10.8.0.0/16" value="${esc(c.ipRanges || '')}">
+        </div>
+        <div>
+          <label>外部调用口令 X-Check-Key（给自动化工具/MCP 用；留空=仅登录后可调）</label>
+          <input id="cfgIpKey" placeholder="如 mcp-key-2026" value="${esc(c.ipCheckKey || '')}">
+        </div>
+        <div>
+          <label>真实 IP 来源</label>
+          <select id="cfgTrustFwd">
+            <option value="0" ${!c.trustForwarded ? 'selected' : ''}>直连访问（默认，取连接 IP）</option>
+            <option value="1" ${c.trustForwarded ? 'selected' : ''}>在反向代理后（取 X-Forwarded-For）</option>
+          </select>
+        </div>
+      </div>
+      <p class="hint">自动化口子（免登录，带口令即可）：<code>GET /api/where-am-i</code> + 请求头 <code>X-Check-Key: 口令</code>，
+        返回 JSON：<code>{"ip":"...","inWorkArea":true,"matched":"192.168.1.0/24"}</code>。<br>
+        示例：<code>curl -H "X-Check-Key: 你的口令" http://服务器IP:8787/api/where-am-i</code>——
+        在要验证的那台机器上执行，返回的就是该机器的判定结果。</p>
+    </div>
+
+    <div class="card">
       <h3>📥 批量导入排班</h3>
       <p class="hint">每行：<code>日期 姓名1 姓名2 …</code>（逗号/空格分隔，一天可多人，自动落到各成员所在组；也可以直接写代号 a/b/c）；
         姓名填 <code>-</code> 表示清空该天（两组都清空）。导入后自动重发飞书。</p>
@@ -980,6 +1036,9 @@ async function loadSettings() {
       saturdayDouble: $('#cfgSatDouble').value === '1',
       resendDelayMs: Number($('#cfgResendDelay').value),
       timezone: $('#cfgTimezone').value.trim() || 'Asia/Shanghai',
+      ipRanges: $('#cfgIpRanges').value.trim(),
+      ipCheckKey: $('#cfgIpKey').value.trim(),
+      trustForwarded: $('#cfgTrustFwd').value === '1',
       aiModel: $('#cfgAiModel').value.trim() || 'deepseek-chat',
       aiBaseUrl: $('#cfgAiBase').value.trim() || 'https://api.deepseek.com',
       aiCheckHour: Number($('#cfgAiHour').value),

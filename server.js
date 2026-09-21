@@ -584,11 +584,15 @@ app.get('/api/config', auth.requireAdmin, (req, res) => {
   const jpass = String(c.jukuAdminPassword || '');
   c.hasJukuPass = !!jpass;
   c.jukuPassMask = jpass ? `${jpass.slice(0, 2)}…${jpass.slice(-2)}` : '';
+  const bsecret = String(c.jukuBridgeSecret || '');
+  c.hasBridgeSecret = !!bsecret;
+  c.bridgeSecretMask = bsecret ? `${bsecret.slice(0, 2)}…${bsecret.slice(-2)}` : '';
   c.lastSend = store.data.lastSend;
   delete c.aiApiKey;
   delete c.adminPasswordHash;
   delete c.adminSalt;
   delete c.jukuAdminPassword;
+  delete c.jukuBridgeSecret;
   res.json(c);
 });
 
@@ -610,6 +614,11 @@ app.post('/api/config', auth.requireAdmin, (req, res) => {
     const v = String(body.jukuAdminPassword).trim();
     if (v === 'CLEAR') { c.jukuAdminPassword = ''; touched.push('剧库密码(删除)'); }
     else if (v) { c.jukuAdminPassword = v; touched.push('剧库密码'); }
+  }
+  if (body.jukuBridgeSecret !== undefined) {
+    const v = String(body.jukuBridgeSecret).trim();
+    if (v === 'CLEAR') { c.jukuBridgeSecret = ''; touched.push('免登录密钥(删除)'); }
+    else if (v) { c.jukuBridgeSecret = v; touched.push('免登录密钥'); }
   }
   c.sendHour = Math.min(23, Math.max(0, c.sendHour | 0));
   c.sendMinute = Math.min(59, Math.max(0, c.sendMinute | 0));
@@ -642,6 +651,26 @@ app.post('/api/juku/sync', auth.requireAdmin, ah(async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 }));
+
+// 「加班看剧」入口：成员拿到 60 秒有效的免登录桥链接；管理员/未配密钥时直接给剧库首页
+app.get('/api/juku/open-url', auth.requireAuth, (req, res) => {
+  const db = store.data;
+  const cfg = db.config;
+  if (!cfg.jukuBaseUrl) return res.status(400).json({ error: '管理员尚未配置剧库地址' });
+  const home = String(cfg.jukuBaseUrl).replace(/\/+$/, '') + '/';
+  if (req.auth.role !== 'user' || !cfg.jukuBridgeSecret) {
+    return res.json({ url: home, bridged: false });
+  }
+  const me = store.personById(req.auth.userId);
+  if (!me) return res.status(403).json({ error: '账号不存在' });
+  const exp = Math.floor(Date.now() / 1000) + 60;
+  const sig = crypto.createHmac('sha256', cfg.jukuBridgeSecret)
+    .update(`${me.name}|${exp}`).digest('hex');
+  res.json({
+    url: `${String(cfg.jukuBaseUrl).replace(/\/+$/, '')}/bridge-login?user=${encodeURIComponent(me.name)}&exp=${exp}&sig=${sig}`,
+    bridged: true,
+  });
+});
 
 // —— 工作区域 IP 验证（网页按钮 + 自动化/MCP 口子；纯查询，不写任何数据）——
 app.get('/api/where-am-i', (req, res) => {

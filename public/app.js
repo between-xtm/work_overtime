@@ -319,7 +319,14 @@ async function loadSchedule() {
   };
 
   const btnJuku = $('#btnJuku');
-  if (btnJuku) btnJuku.onclick = () => window.open(state.data.config.jukuUrl, '_blank');
+  if (btnJuku) btnJuku.onclick = async () => {
+    try {
+      const r = await api('/api/juku/open-url');
+      window.open(r.url, '_blank');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
 }
 
 function sendBarHtml(d) {
@@ -1026,6 +1033,12 @@ async function loadSettings() {
           <label>剧库管理员密码${c.hasJukuPass ? `（已配置 ${esc(c.jukuPassMask)}，输入新值覆盖，输入 CLEAR 删除）` : '（未配置）'}</label>
           <input id="cfgJukuPass" type="password" placeholder="${c.hasJukuPass ? '留空保持不变' : '剧库管理员密码'}" autocomplete="off">
         </div>
+        <div class="full">
+          <label>免登录桥密钥${c.hasBridgeSecret ? `（已配置 ${esc(c.bridgeSecretMask)}，输入新值覆盖，输入 CLEAR 删除）` : '（未配置：成员点「加班看剧」需手动登录剧库）'}</label>
+          <input id="cfgJukuBridge" type="password" placeholder="${c.hasBridgeSecret ? '留空保持不变' : '与剧库启动参数 -bridge-secret 一致'}" autocomplete="off">
+          <p class="hint">配置后：成员点「🎬 加班看剧」直接以本人身份进入剧库，<b>无需再输密码</b>（链接 60 秒有效、按次签发，不存任何成员密码）。剧库启动时需带相同密钥：
+          <code>./juku_linux_amd64 -bridge-secret 同一个密钥 …</code></p>
+        </div>
       </div>
       <div class="rowbtns">
         <button id="btnSaveJuku" class="primary">保存剧库配置</button>
@@ -1114,6 +1127,8 @@ async function loadSettings() {
     };
     const pass = $('#cfgJukuPass').value.trim();
     if (pass) body.jukuAdminPassword = pass;
+    const bridge = $('#cfgJukuBridge').value.trim();
+    if (bridge) body.jukuBridgeSecret = bridge;
     try {
       await api('/api/config', { method: 'POST', body });
       toast('剧库配置已保存 ✅（入口按钮在排班页下方）', 'ok');

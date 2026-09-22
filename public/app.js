@@ -36,6 +36,8 @@ const state = {
   promptGroup: 'g1',
   stats: null,
   statsMode: 'all',
+  ipLogMonth: 'all',
+  ipLogName: '',
   suggestions: null,
   logs: null,
   tab: 'schedule',
@@ -616,10 +618,75 @@ function renderStats() {
         ${modes.map(([k, l]) => `<button class="${state.statsMode === k ? 'active' : ''}" data-mode="${k}">${l}</button>`).join('')}
       </div>
     </div>
+    ${ipLogCardHtml()}
     ${groupCards}`;
   $$('.seg button').forEach((b) => {
     b.onclick = () => { state.statsMode = b.dataset.mode; renderStats(); };
   });
+  const ipName = $('#ipLogName');
+  if (ipName) ipName.onchange = () => { state.ipLogName = ipName.value.trim(); renderIpLogCard(); };
+  const ipExport = $('#btnIpLogExport');
+  if (ipExport) ipExport.onclick = exportIpLogCsv;
+  renderIpLogCard();
+}
+
+function ipLogCardHtml() {
+  return `
+    <div class="card" id="ipLogCard">
+      <h3>📍 验证留档</h3>
+      <p class="hint">成员点「验证我是否在工作区域」自动落库（仅在配置了 IP 段后记录）；「导出 CSV」按所选月份下载，Excel 可直接打开，留存备查。</p>
+      <div class="row">
+        <select id="ipLogMonth"><option value="all">全部月份</option></select>
+        <input id="ipLogName" placeholder="按姓名筛选（可留空）" style="max-width:180px" value="${esc(state.ipLogName || '')}">
+        <button id="btnIpLogExport" class="ghost btn-sm">⬇ 导出 CSV</button>
+      </div>
+      <div class="tscroll"><table>
+        <thead><tr><th>时间</th><th>姓名</th><th>IP</th><th>工作区域内</th><th>命中IP段</th><th>来源</th></tr></thead>
+        <tbody id="ipLogTable"><tr><td colspan="6" class="hint">加载中…</td></tr></tbody>
+      </table></div>
+    </div>`;
+}
+
+async function renderIpLogCard() {
+  const table = $('#ipLogTable');
+  if (!table) return;
+  try {
+    const q = new URLSearchParams({ month: state.ipLogMonth || 'all' });
+    if (state.ipLogName) q.set('name', state.ipLogName);
+    const r = await api('/api/ipcheck-log?' + q.toString());
+    const sel = $('#ipLogMonth');
+    if (sel) {
+      sel.innerHTML = ['all', ...(r.months || [])].map((m) => `<option value="${esc(m)}" ${m === (state.ipLogMonth || 'all') ? 'selected' : ''}>${m === 'all' ? '全部月份' : m}</option>`).join('');
+      sel.onchange = () => { state.ipLogMonth = sel.value; renderIpLogCard(); };
+    }
+    table.innerHTML = r.records.length ? r.records.map((x) => `
+      <tr>
+        <td>${esc(x.time)}</td><td><b>${esc(x.name || '（自动化）')}</b></td><td>${esc(x.ip)}</td>
+        <td>${x.inWorkArea ? '<span class="ok">是</span>' : '<span class="bad">否</span>'}</td>
+        <td>${esc(x.matched || '—')}</td><td>${x.source === 'api' ? '自动化' : '网页'}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="hint">暂无验证记录（配置工作区域 IP 段后，成员验证会自动留档）</td></tr>';
+  } catch (e) {
+    table.innerHTML = `<tr><td colspan="6" class="hint">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function exportIpLogCsv() {
+  try {
+    const q = new URLSearchParams({ month: state.ipLogMonth || 'all' });
+    const res = await fetch('/api/ipcheck-log/export?' + q.toString(), {
+      headers: { Authorization: 'Bearer ' + state.token },
+    });
+    if (!res.ok) return toast('导出失败 ' + res.status, 'error');
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const m = (res.headers.get('Content-Disposition') || '').match(/filename\*=UTF-8''([^;]+)/);
+    a.download = m ? decodeURIComponent(m[1]) : '加班验证记录.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function fairnessNote(rows) {

@@ -709,6 +709,84 @@ app.get('/api/where-am-i', (req, res) => {
   });
 });
 
+// —— 验证留档：管理员筛选查询 / 成员自查 / CSV 导出 ——
+function fmtLogTs(ts, tz) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: tz || 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date(ts)).replace(/\//g, '-');
+}
+
+function monthOfTs(ts, tz) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: tz || 'Asia/Shanghai', year: 'numeric', month: '2-digit',
+  }).format(new Date(ts)).replace('/', '-');
+}
+
+function csvCell(v) {
+  const s = String(v === undefined || v === null ? '' : v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function filteredIpLog(db, { month, name, limit, desc }) {
+  const tz = db.config.timezone;
+  let rows = db.ipCheckLog.slice();
+  if (month) rows = rows.filter((r) => monthOfTs(r.ts, tz) === month);
+  if (name) {
+    const q = String(name).trim().toLowerCase();
+    rows = rows.filter((r) => String(r.name || '').toLowerCase().includes(q));
+  }
+  if (desc) rows.reverse(); // 新的在前（查询场景）；导出保持时间升序
+  return rows.slice(0, limit);
+}
+
+function ipLogMonths(db) {
+  const tz = db.config.timezone;
+  const seen = new Map(); // YYYY-MM → 排序键，新的在前
+  for (const r of db.ipCheckLog) {
+    const m = monthOfTs(r.ts, tz);
+    if (!seen.has(m)) seen.set(m, r.ts);
+  }
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
+}
+
+app.get('/api/ipcheck-log', auth.requireAdmin, (req, res) => {
+  const db = store.data;
+  const tz = db.config.timezone;
+  const month = String(req.query.month || '').trim();
+  const name = String(req.query.name || '').trim();
+  const limit = Math.min(2000, Math.max(1, Number(req.query.limit) || 500));
+  const rows = filteredIpLog(db, { month: month === 'all' ? '' : month, name, limit, desc: true });
+  res.json({
+    records: rows.map((r) => ({ time: fmtLogTs(r.ts, tz), name: r.name, ip: r.ip, inWorkArea: r.inWorkArea, matched: r.matched, source: r.source })),
+    months: ipLogMonths(db),
+  });
+});
+
+app.get('/api/ipcheck-log/mine', auth.requireAuth, (req, res) => {
+  const tz = store.data.config.timezone;
+  const rows = store.data.ipCheckLog
+    .filter((r) => req.auth && r.name === req.auth.name)
+    .slice(-20).reverse();
+  res.json({ records: rows.map((r) => ({ time: fmtLogTs(r.ts, tz), name: r.name, ip: r.ip, inWorkArea: r.inWorkArea, matched: r.matched, source: r.source })) });
+});
+
+app.get('/api/ipcheck-log/export', auth.requireAdmin, (req, res) => {
+  const db = store.data;
+  const tz = db.config.timezone;
+  const month = String(req.query.month || '').trim();
+  const rows = filteredIpLog(db, { month: month === 'all' ? '' : month, name: '', limit: 100000, desc: false });
+  const head = '时间,姓名,IP,工作区域内,命中IP段,来源';
+  const body = rows.map((r) => [
+    fmtLogTs(r.ts, tz), r.name || '（自动化）', r.ip,
+    r.inWorkArea ? '是' : '否', r.matched || '', r.source === 'api' ? '自动化' : '网页',
+  ].map(csvCell).join(',')).join('\r\n');
+  const fname = (month && month !== 'all') ? `加班验证记录-${month}.csv` : '加班验证记录-全部.csv';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="ipcheck-log.csv"; filename*=UTF-8''${encodeURIComponent(fname)}`);
+  res.send('\uFEFF' + head + '\r\n' + body);
+});
+
 app.post('/api/send-now', auth.requireAdmin, ah(async (req, res) => {
   ensureHorizon();
   const ws = weekOrCurrent(req);

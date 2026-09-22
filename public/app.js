@@ -109,6 +109,27 @@ function afterMutation(r) {
 }
 
 /* —— 登录页 —— */
+let bossKeyCount = 0;      // 连点计数：· 或 `，其他键清零
+let bossKeyHandler = null; // 全局监听引用（防重复挂载/退出登录后残留）
+
+function armBossKey() {
+  if (bossKeyHandler) document.removeEventListener('keydown', bossKeyHandler);
+  bossKeyCount = 0;
+  bossKeyHandler = (e) => {
+    if (e.key !== '·' && e.key !== '`') { bossKeyCount = 0; return; }
+    bossKeyCount += 1;
+    if (bossKeyCount < 6) return;
+    bossKeyCount = 0;
+    const sel = $('#loginName');
+    if (sel && !sel.querySelector('option[value="admin"]')) {
+      sel.insertAdjacentHTML('beforeend', '<option value="admin">管理员</option>');
+      sel.value = 'admin';
+      $('#loginPass').focus();
+    }
+  };
+  document.addEventListener('keydown', bossKeyHandler);
+}
+
 async function renderLogin() {
   let people = [];
   try { people = (await api('/api/people')).people; } catch { /* 忽略 */ }
@@ -121,7 +142,6 @@ async function renderLogin() {
         <div class="row">
           <select id="loginName">
             ${people.map((n) => `<option value="${esc(n.name)}">${esc(n.name)}${n.group ? '（' + esc(n.group) + '）' : ''}</option>`).join('')}
-            <option value="admin">管理员</option>
           </select>
         </div>
         <label>密码</label>
@@ -133,6 +153,7 @@ async function renderLogin() {
     </div>`;
   $('#btnLogin').onclick = doLogin;
   $('#loginPass').onkeydown = (e) => { if (e.key === 'Enter') doLogin(); };
+  armBossKey();
 }
 
 async function doLogin() {
@@ -146,6 +167,7 @@ async function doLogin() {
     state.weekStart = weekStartOf(todayStr());
     state.tab = 'schedule';
     localStorage.setItem('ot_token', r.token);
+    if (bossKeyHandler) { document.removeEventListener('keydown', bossKeyHandler); bossKeyHandler = null; }
     renderShell();
     loadTab();
   } catch (e) {

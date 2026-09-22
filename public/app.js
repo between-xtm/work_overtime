@@ -284,6 +284,10 @@ async function loadSchedule() {
       ${d.config.jukuUrl ? '<button id="btnJuku" class="ghost btn-sm">🎬 加班看剧</button>' : ''}
       <span id="ipCheckResult" class="inline-note"></span>
     </div>
+    <details id="myIpLogWrap" style="margin:10px 0 0 2px">
+      <summary class="hint" style="cursor:pointer;user-select:none">📋 我的验证留档（最近 20 条）</summary>
+      <div id="myIpLog" class="hint" style="margin-top:6px"></div>
+    </details>
     ${isAdmin
       ? '<p class="hint">管理员提示：点击日期可按组编辑当天出勤名单（可多人）；两组互不影响，各排各的。</p>'
       : '<p class="hint">提示：每天两组各有 0~N 人出勤。点击日期可处理<b>自己组</b>的班：换班 / 弃班 / 认领加入。</p>'}`;
@@ -292,6 +296,19 @@ async function loadSchedule() {
   $('#wNext').onclick = () => { state.weekStart = addDays(state.weekStart, 7); loadSchedule(); };
   $('#wToday').onclick = () => { state.weekStart = weekStartOf(todayStr()); loadSchedule(); };
   $$('.day').forEach((el) => { el.onclick = () => openDayModal(el.dataset.date); });
+
+  const myLogWrap = $('#myIpLogWrap');
+  const fillMyIpLog = async () => {
+    const box = $('#myIpLog');
+    if (!box) return;
+    try {
+      const r = await api('/api/ipcheck-log/mine');
+      box.innerHTML = r.records.length
+        ? `<div class="tscroll"><table><tbody>${r.records.map((x) => `<tr><td>${esc(x.time)}</td><td>${esc(x.ip)}</td><td>${x.inWorkArea ? '<span class="ok">区域内</span>' : '<span class="bad">区域外</span>'}</td></tr>`).join('')}</tbody></table></div>`
+        : '暂无记录。点上面按钮验证一次就会自动留档。';
+    } catch (e) { box.textContent = e.message; }
+  };
+  if (myLogWrap) myLogWrap.ontoggle = () => { if (myLogWrap.open) fillMyIpLog(); };
 
   $('#btnIpCheck').onclick = async () => {
     const btn = $('#btnIpCheck');
@@ -304,12 +321,13 @@ async function loadSchedule() {
         out.innerHTML = `${esc(r.hint || '管理员尚未配置工作区域 IP 段')}<br>你当前 IP：<b>${esc(r.ip)}</b>（在公司时把这个 IP 或它所在网段填进「设置→工作区域 IP 验证」即可）`;
         out.className = 'inline-note';
       } else if (r.inWorkArea) {
-        out.innerHTML = `✅ 你现在在工作区域（IP：${esc(r.ip)}${r.matched ? ` · 命中 ${esc(r.matched)}` : ''}）`;
+        out.innerHTML = `✅ 已留档：你在工作区域（IP：${esc(r.ip)}${r.matched ? ` · 命中 ${esc(r.matched)}` : ''}）`;
         out.className = 'inline-note ok';
       } else {
-        out.innerHTML = `⚠️ 你不在工作区域（IP：${esc(r.ip)}，未命中 ${esc((r.ranges || []).join('、')) || '任何 IP 段'}）`;
+        out.innerHTML = `⚠️ 已留档：你不在工作区域（IP：${esc(r.ip)}，未命中 ${esc((r.ranges || []).join('、')) || '任何 IP 段'}）`;
         out.className = 'inline-note bad';
       }
+      if (myLogWrap && myLogWrap.open) fillMyIpLog();
     } catch (e) {
       out.textContent = e.message;
       out.className = 'inline-note bad';

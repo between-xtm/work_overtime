@@ -687,10 +687,21 @@ app.get('/api/where-am-i', (req, res) => {
     return res.json({ ok: true, ip, configured: false, inWorkArea: null, hint: '管理员尚未配置工作区域 IP 段' });
   }
   const matched = ipcheck.ipInRanges(ip, ranges);
+  // 已配置 IP 段才留档（未配置时验证无意义，不写库）
+  store.appendIpCheck({
+    ts: Date.now(),
+    name: req.auth ? String(req.auth.name || '') : '',  // 自动化调用无登录身份
+    ip,
+    inWorkArea: !!matched,
+    matched: matched || '',
+    source: req.auth ? 'web' : 'api',
+  });
+  store.save();
   res.json({
     ok: true,
     ip,
     configured: true,
+    recorded: true,
     inWorkArea: !!matched,
     matched: matched || '',
     ranges: list,

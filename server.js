@@ -718,9 +718,7 @@ function fmtLogTs(ts, tz) {
 }
 
 function monthOfTs(ts, tz) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: tz || 'Asia/Shanghai', year: 'numeric', month: '2-digit',
-  }).format(new Date(ts)).replace('/', '-');
+  return fmtLogTs(ts, tz).slice(0, 7); // "2026-09-22 …" → "2026-09"；与显示口径同源，避免 Intl 年月单独格式化的地区差异
 }
 
 function csvCell(v) {
